@@ -20,7 +20,7 @@ the code without a test failing.
 - **Field widening**: `u64` and `u128` values are widened to `felt252` unchanged;
   a `ContractAddress` is its felt value. No packing, no offsets, no length prefix.
 - **Short strings**: `'ACCREDITED'` is the ASCII bytes read big-endian as an integer, the standard
-  Cairo short-string encoding (`encodeShortString` in `starknet`).
+  Cairo short-string encoding (`shortString.encodeShortString` in `starknet`).
 
 ## Domain-separation tags
 
@@ -159,10 +159,10 @@ subject_action_hash = 0x1d07660058550812f9d317014bcb9a843f55a2ed9362642fdb0c0eb2
 ## Reproducing it in TypeScript
 
 ```ts
-import { ec, encodeShortString, hash, num } from "starknet";
+import { ec, hash, num, shortString } from "starknet";
 
-const CREDENTIAL_TAG = encodeShortString("CORDON_CREDENTIAL:V1");
-const SUBJECT_ACTION_TAG = encodeShortString("CORDON_SUBJECT_ACTION:V2");
+const CREDENTIAL_TAG = shortString.encodeShortString("CORDON_CREDENTIAL:V1");
+const SUBJECT_ACTION_TAG = shortString.encodeShortString("CORDON_SUBJECT_ACTION:V2");
 
 export function credentialHash(c: {
   issuerId: string;
