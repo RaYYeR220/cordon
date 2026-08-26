@@ -10,17 +10,12 @@
 //!
 //! The four contracts split cleanly along who governs what:
 //!
-//! | Contract                                                     | Governs
-//! |
-//! |--------------------------------------------------------------|---------------------------------------------|
-//! | [`IssuerRegistry`](issuer_registry::IssuerRegistry)           | which keys may attest, and who
-//! speaks for them |
-//! | [`RevocationRegistry`](revocation_registry::RevocationRegistry) | which credentials an issuer
-//! has withdrawn   |
-//! | [`PolicyRegistry`](policy_registry::PolicyRegistry)           | the published, immutable rule
-//! sets          |
-//! | [`PolicyGate`](policy_gate::PolicyGate)                       | the enforcement point the pool
-//! calls        |
+//! - [`IssuerRegistry`](issuer_registry::IssuerRegistry) — which keys may attest, and who speaks
+//!   for them.
+//! - [`RevocationRegistry`](revocation_registry::RevocationRegistry) — credentials an issuer
+//!   withdrew.
+//! - [`PolicyRegistry`](policy_registry::PolicyRegistry) — the published, immutable rule sets.
+//! - [`PolicyGate`](policy_gate::PolicyGate) — the enforcement point the pool calls.
 //!
 //! ## What Cordon can and cannot see
 //!
