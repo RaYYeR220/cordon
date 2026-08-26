@@ -1,0 +1,541 @@
+/*
+ * @cordon/react — structural styles.
+ *
+ * Import once:  import "@cordon/react/styles.css";
+ *
+ * Two rules govern this file.
+ *
+ * 1. Every value a host might want to change is a `--cordon-*` custom property, declared once on
+ *    `:root`. Override them anywhere — on `:root`, on a wrapper, on one component — and the
+ *    cascade does the rest. There is no JavaScript theme object and no runtime style injection.
+ *
+ * 2. Every rule is wrapped in `:where()`, so its specificity is zero. A single plain class in a
+ *    host stylesheet outranks anything here, which means "themeable" does not degrade into a
+ *    fight with `!important`.
+ *
+ * The defaults are a deliberate neutral: it should look considered out of the box and disappear
+ * into a designed app the moment the tokens are set.
+ */
+
+:root {
+  /* Surfaces and text */
+  --cordon-bg: #ffffff;
+  --cordon-surface: #ffffff;
+  --cordon-surface-subtle: #f6f7f9;
+  --cordon-border: #dfe3e8;
+  --cordon-border-strong: #c3cad3;
+  --cordon-text: #14181d;
+  --cordon-text-muted: #5b6672;
+
+  /* Verdict colours. These carry meaning, so they are named for the meaning. */
+  --cordon-pass: #0f7a4d;
+  --cordon-pass-bg: #e8f5ee;
+  --cordon-refuse: #b3261e;
+  --cordon-refuse-bg: #fdeceb;
+  --cordon-warn: #8a5a00;
+  --cordon-warn-bg: #fdf3e0;
+  --cordon-unknown: #55606d;
+  --cordon-unknown-bg: #eef0f3;
+
+  /* Interactive */
+  --cordon-accent: #14181d;
+  --cordon-accent-text: #ffffff;
+  --cordon-accent-hover: #2b323a;
+  --cordon-focus-ring: 2px solid #2f6feb;
+  --cordon-focus-offset: 2px;
+
+  /* Type */
+  --cordon-font: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --cordon-font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --cordon-font-size: 0.9375rem;
+  --cordon-font-size-sm: 0.8125rem;
+  --cordon-font-size-xs: 0.75rem;
+  --cordon-line-height: 1.5;
+  --cordon-weight-strong: 600;
+
+  /* Shape and rhythm */
+  --cordon-radius: 10px;
+  --cordon-radius-sm: 6px;
+  --cordon-radius-pill: 999px;
+  --cordon-border-width: 1px;
+  --cordon-gap: 0.75rem;
+  --cordon-gap-sm: 0.375rem;
+  --cordon-pad: 1rem;
+  --cordon-pad-sm: 0.5rem;
+  --cordon-shadow: none;
+
+  /* The meter */
+  --cordon-meter-height: 10px;
+  --cordon-meter-track: #eef0f3;
+  --cordon-meter-fill: #14181d;
+  --cordon-meter-fill-warn: #b8860b;
+  --cordon-meter-fill-full: #b3261e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --cordon-bg: #101317;
+    --cordon-surface: #171b21;
+    --cordon-surface-subtle: #1e232a;
+    --cordon-border: #2b323b;
+    --cordon-border-strong: #3c4551;
+    --cordon-text: #eef1f5;
+    --cordon-text-muted: #9aa5b1;
+
+    --cordon-pass: #5fd39b;
+    --cordon-pass-bg: #10281e;
+    --cordon-refuse: #ff8a80;
+    --cordon-refuse-bg: #2c1614;
+    --cordon-warn: #e8b563;
+    --cordon-warn-bg: #2a2013;
+    --cordon-unknown: #9aa5b1;
+    --cordon-unknown-bg: #1e232a;
+
+    --cordon-accent: #eef1f5;
+    --cordon-accent-text: #101317;
+    --cordon-accent-hover: #ffffff;
+    --cordon-focus-ring: 2px solid #7aa2f7;
+
+    --cordon-meter-track: #232932;
+    --cordon-meter-fill: #eef1f5;
+    --cordon-meter-fill-warn: #e8b563;
+    --cordon-meter-fill-full: #ff8a80;
+  }
+}
+
+/* ---------------------------------------------------------------- primitives */
+
+:where(.cordon) {
+  box-sizing: border-box;
+  color: var(--cordon-text);
+  font-family: var(--cordon-font);
+  font-size: var(--cordon-font-size);
+  line-height: var(--cordon-line-height);
+}
+
+:where(.cordon) *,
+:where(.cordon) *::before,
+:where(.cordon) *::after {
+  box-sizing: inherit;
+}
+
+:where(.cordon-card) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cordon-gap);
+  padding: var(--cordon-pad);
+  background: var(--cordon-surface);
+  border: var(--cordon-border-width) solid var(--cordon-border);
+  border-radius: var(--cordon-radius);
+  box-shadow: var(--cordon-shadow);
+}
+
+:where(.cordon-card__header) {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--cordon-gap);
+}
+
+:where(.cordon-title) {
+  margin: 0;
+  font-size: var(--cordon-font-size);
+  font-weight: var(--cordon-weight-strong);
+}
+
+:where(.cordon-note) {
+  margin: 0;
+  color: var(--cordon-text-muted);
+  font-size: var(--cordon-font-size-sm);
+}
+
+:where(.cordon-mono) {
+  font-family: var(--cordon-font-mono);
+  font-size: var(--cordon-font-size-sm);
+  overflow-wrap: anywhere;
+}
+
+:where(.cordon-fields) {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--cordon-gap-sm) var(--cordon-gap);
+  margin: 0;
+}
+
+:where(.cordon-fields dt) {
+  color: var(--cordon-text-muted);
+  font-size: var(--cordon-font-size-sm);
+}
+
+:where(.cordon-fields dd) {
+  margin: 0;
+  font-size: var(--cordon-font-size-sm);
+  overflow-wrap: anywhere;
+}
+
+:where(.cordon-list) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cordon-gap-sm);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+:where(.cordon-rules) {
+  margin: 0;
+  padding-inline-start: 1.1rem;
+  color: var(--cordon-text-muted);
+  font-size: var(--cordon-font-size-sm);
+}
+
+:where(.cordon-link) {
+  color: inherit;
+  text-underline-offset: 0.15em;
+}
+
+/* Focus is never removed, only restyled. */
+:where(.cordon) :where(a, button, input, [tabindex]):focus-visible {
+  outline: var(--cordon-focus-ring);
+  outline-offset: var(--cordon-focus-offset);
+  border-radius: var(--cordon-radius-sm);
+}
+
+/* --------------------------------------------------------------------- badge */
+
+:where(.cordon-badge) {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cordon-gap-sm);
+  padding: 0.125rem 0.5rem;
+  border: var(--cordon-border-width) solid transparent;
+  border-radius: var(--cordon-radius-pill);
+  background: var(--cordon-unknown-bg);
+  color: var(--cordon-unknown);
+  font-size: var(--cordon-font-size-xs);
+  font-weight: var(--cordon-weight-strong);
+  white-space: nowrap;
+}
+
+:where(.cordon-badge--pass) {
+  background: var(--cordon-pass-bg);
+  color: var(--cordon-pass);
+}
+
+:where(.cordon-badge--refuse) {
+  background: var(--cordon-refuse-bg);
+  color: var(--cordon-refuse);
+}
+
+:where(.cordon-badge--warn) {
+  background: var(--cordon-warn-bg);
+  color: var(--cordon-warn);
+}
+
+/* A dot carries the same meaning as the colour for anyone who cannot see the colour: it is only
+   ever decorative, and every badge also states its verdict in words. */
+:where(.cordon-badge__dot) {
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+/* -------------------------------------------------------------------- button */
+
+:where(.cordon-button) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--cordon-gap-sm);
+  padding: 0.5rem 0.875rem;
+  border: var(--cordon-border-width) solid transparent;
+  border-radius: var(--cordon-radius-sm);
+  background: var(--cordon-accent);
+  color: var(--cordon-accent-text);
+  font: inherit;
+  font-weight: var(--cordon-weight-strong);
+  cursor: pointer;
+}
+
+:where(.cordon-button:hover:not(:disabled)) {
+  background: var(--cordon-accent-hover);
+}
+
+:where(.cordon-button:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+:where(.cordon-button--secondary) {
+  background: transparent;
+  color: var(--cordon-text);
+  border-color: var(--cordon-border-strong);
+}
+
+:where(.cordon-button--secondary:hover:not(:disabled)) {
+  background: var(--cordon-surface-subtle);
+}
+
+/* ---------------------------------------------------------------- connect */
+
+:where(.cordon-wallets) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cordon-gap-sm);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+:where(.cordon-wallet-button) {
+  display: flex;
+  align-items: center;
+  gap: var(--cordon-gap);
+  width: 100%;
+  padding: var(--cordon-pad-sm) var(--cordon-gap);
+  border: var(--cordon-border-width) solid var(--cordon-border);
+  border-radius: var(--cordon-radius-sm);
+  background: var(--cordon-surface);
+  color: var(--cordon-text);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+:where(.cordon-wallet-button:hover:not(:disabled)) {
+  border-color: var(--cordon-border-strong);
+  background: var(--cordon-surface-subtle);
+}
+
+:where(.cordon-wallet-button:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+:where(.cordon-wallet-button__icon) {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: var(--cordon-radius-sm);
+  flex: none;
+}
+
+:where(.cordon-account) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cordon-gap);
+}
+
+/* ---------------------------------------------------------------- meter */
+
+:where(.cordon-meter) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cordon-gap-sm);
+}
+
+:where(.cordon-meter__head) {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--cordon-gap);
+  font-size: var(--cordon-font-size-sm);
+}
+
+:where(.cordon-meter__label) {
+  color: var(--cordon-text-muted);
+}
+
+:where(.cordon-meter__value) {
+  font-family: var(--cordon-font-mono);
+  font-size: var(--cordon-font-size-sm);
+}
+
+:where(.cordon-meter__track) {
+  position: relative;
+  height: var(--cordon-meter-height);
+  border-radius: var(--cordon-radius-pill);
+  background: var(--cordon-meter-track);
+  overflow: hidden;
+}
+
+:where(.cordon-meter__fill) {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--cordon-meter-fill);
+  transition: width 240ms ease;
+}
+
+:where(.cordon-meter--warn) :where(.cordon-meter__fill) {
+  background: var(--cordon-meter-fill-warn);
+}
+
+:where(.cordon-meter--full) :where(.cordon-meter__fill) {
+  background: var(--cordon-meter-fill-full);
+}
+
+/* A striped track states "we could not read this" without relying on colour alone. */
+:where(.cordon-meter__track--unavailable) {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--cordon-meter-track),
+    var(--cordon-meter-track) 6px,
+    transparent 6px,
+    transparent 12px
+  );
+}
+
+/* ---------------------------------------------------------------- refusal */
+
+:where(.cordon-refusal) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cordon-gap-sm);
+  padding: var(--cordon-pad);
+  border: var(--cordon-border-width) solid var(--cordon-refuse);
+  border-radius: var(--cordon-radius);
+  background: var(--cordon-refuse-bg);
+  color: var(--cordon-text);
+}
+
+:where(.cordon-refusal__head) {
+  display: flex;
+  align-items: center;
+  gap: var(--cordon-gap-sm);
+  flex-wrap: wrap;
+}
+
+:where(.cordon-refusal__code) {
+  font-family: var(--cordon-font-mono);
+  font-size: var(--cordon-font-size-sm);
+  font-weight: var(--cordon-weight-strong);
+  color: var(--cordon-refuse);
+}
+
+:where(.cordon-refusal__title) {
+  margin: 0;
+  font-size: var(--cordon-font-size);
+  font-weight: var(--cordon-weight-strong);
+}
+
+:where(.cordon-refusal__body) {
+  margin: 0;
+  font-size: var(--cordon-font-size-sm);
+}
+
+:where(.cordon-refusal__meta) {
+  display: flex;
+  gap: var(--cordon-gap);
+  flex-wrap: wrap;
+  font-size: var(--cordon-font-size-xs);
+  color: var(--cordon-text-muted);
+}
+
+/* ---------------------------------------------------------------- payment */
+
+:where(.cordon-payment) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cordon-gap);
+}
+
+:where(.cordon-payment__status) {
+  font-size: var(--cordon-font-size-sm);
+  color: var(--cordon-text-muted);
+}
+
+:where(.cordon-steps) {
+  display: flex;
+  align-items: center;
+  gap: var(--cordon-gap-sm);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--cordon-font-size-xs);
+  color: var(--cordon-text-muted);
+  flex-wrap: wrap;
+}
+
+:where(.cordon-steps__item[data-state="done"]) {
+  color: var(--cordon-pass);
+}
+
+:where(.cordon-steps__item[data-state="active"]) {
+  color: var(--cordon-text);
+  font-weight: var(--cordon-weight-strong);
+}
+
+:where(.cordon-steps__item[data-state="refused"]) {
+  color: var(--cordon-refuse);
+  font-weight: var(--cordon-weight-strong);
+}
+
+/* ---------------------------------------------------------------- feed */
+
+:where(.cordon-feed) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cordon-gap-sm);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+:where(.cordon-feed__row) {
+  display: flex;
+  align-items: baseline;
+  gap: var(--cordon-gap);
+  padding: var(--cordon-pad-sm) var(--cordon-gap);
+  border: var(--cordon-border-width) solid var(--cordon-border);
+  border-radius: var(--cordon-radius-sm);
+  background: var(--cordon-surface);
+  font-size: var(--cordon-font-size-sm);
+  flex-wrap: wrap;
+}
+
+:where(.cordon-feed__row[data-verdict="refused"]) {
+  border-color: var(--cordon-refuse);
+}
+
+:where(.cordon-feed__detail) {
+  color: var(--cordon-text-muted);
+  font-size: var(--cordon-font-size-xs);
+}
+
+:where(.cordon-feed__spacer) {
+  margin-inline-start: auto;
+}
+
+/* ---------------------------------------------------------------- utility */
+
+:where(.cordon-visually-hidden) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+:where(.cordon-empty) {
+  padding: var(--cordon-pad);
+  border: var(--cordon-border-width) dashed var(--cordon-border);
+  border-radius: var(--cordon-radius);
+  color: var(--cordon-text-muted);
+  font-size: var(--cordon-font-size-sm);
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :where(.cordon) *,
+  :where(.cordon) *::before,
+  :where(.cordon) *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

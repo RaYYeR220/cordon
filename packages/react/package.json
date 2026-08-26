@@ -1,0 +1,76 @@
+{
+  "name": "@cordon/react",
+  "version": "0.1.0",
+  "description": "Drop-in React hooks and components for Cordon: gate a shielded STRK20 payment on a credential and an on-chain policy, and show the user exactly which rule refused them.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": [
+    "*.css"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./strk20": {
+      "types": "./dist/strk20.d.ts",
+      "import": "./dist/strk20.js",
+      "require": "./dist/strk20.cjs"
+    },
+    "./styles.css": "./dist/styles.css",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "react",
+    "starknet",
+    "strk20",
+    "privacy",
+    "credentials",
+    "compliance",
+    "cordon"
+  ],
+  "peerDependencies": {
+    "@cordon/sdk": "^0.1.0",
+    "react": "^19.0.0",
+    "starknet": "^10.4.0"
+  },
+  "dependencies": {
+    "@starknet-io/get-starknet-discovery": "^6.0.4",
+    "@starknet-io/get-starknet-wallet-standard": "^6.0.4"
+  },
+  "devDependencies": {
+    "@cordon/sdk": "file:../sdk",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "jsdom": "^27.0.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "starknet": "^10.4.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
