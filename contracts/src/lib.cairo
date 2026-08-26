@@ -41,4 +41,6 @@ mod mocks;
 pub mod policy_gate;
 pub mod policy_registry;
 pub mod revocation_registry;
+#[cfg(test)]
+mod tests;
 pub mod types;

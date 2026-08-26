@@ -1,0 +1,81 @@
+//! Revocation belongs to the issuer, not to the registry owner.
+
+use snforge_std::{start_cheat_caller_address, stop_cheat_caller_address};
+use crate::interfaces::IRevocationRegistryDispatcherTrait;
+use crate::tests::common::{
+    CREDENTIAL_ID, ISSUER_ID, OTHER_ISSUER_ID, issuer_operator, owner, setup, stranger,
+};
+
+#[test]
+fn operator_can_revoke() {
+    let cordon = setup();
+    assert!(!cordon.revocation_registry.is_revoked(ISSUER_ID, CREDENTIAL_ID));
+
+    start_cheat_caller_address(cordon.revocation_registry.contract_address, issuer_operator());
+    cordon.revocation_registry.revoke(ISSUER_ID, CREDENTIAL_ID);
+    stop_cheat_caller_address(cordon.revocation_registry.contract_address);
+
+    assert!(cordon.revocation_registry.is_revoked(ISSUER_ID, CREDENTIAL_ID));
+}
+
+/// Credential ids are issuer-scoped. One issuer revoking says nothing about another's book, even
+/// when they happen to use the same id.
+#[test]
+fn revocation_is_scoped_to_the_issuer() {
+    let cordon = setup();
+
+    start_cheat_caller_address(cordon.revocation_registry.contract_address, issuer_operator());
+    cordon.revocation_registry.revoke(ISSUER_ID, CREDENTIAL_ID);
+    stop_cheat_caller_address(cordon.revocation_registry.contract_address);
+
+    assert!(cordon.revocation_registry.is_revoked(ISSUER_ID, CREDENTIAL_ID));
+    assert!(!cordon.revocation_registry.is_revoked(OTHER_ISSUER_ID, CREDENTIAL_ID));
+}
+
+#[test]
+#[should_panic(expected: 'CORDON_NOT_OPERATOR')]
+fn stranger_cannot_revoke() {
+    let cordon = setup();
+
+    start_cheat_caller_address(cordon.revocation_registry.contract_address, stranger());
+    cordon.revocation_registry.revoke(ISSUER_ID, CREDENTIAL_ID);
+}
+
+/// The registry owner governs *who* may attest. Deciding that a specific credential is void is the
+/// issuer's call alone, and the owner does not get to make it for them.
+#[test]
+#[should_panic(expected: 'CORDON_NOT_OPERATOR')]
+fn owner_cannot_revoke_on_an_issuers_behalf() {
+    let cordon = setup();
+
+    start_cheat_caller_address(cordon.revocation_registry.contract_address, owner());
+    cordon.revocation_registry.revoke(ISSUER_ID, CREDENTIAL_ID);
+}
+
+#[test]
+#[should_panic(expected: 'CORDON_NOT_OPERATOR')]
+fn an_issuer_without_an_operator_cannot_be_revoked_for() {
+    let cordon = setup();
+
+    start_cheat_caller_address(cordon.revocation_registry.contract_address, issuer_operator());
+    cordon.revocation_registry.revoke(OTHER_ISSUER_ID, CREDENTIAL_ID);
+}
+
+#[test]
+#[should_panic(expected: 'CORDON_ALREADY_REVOKED')]
+fn revoking_twice_is_surfaced() {
+    let cordon = setup();
+
+    start_cheat_caller_address(cordon.revocation_registry.contract_address, issuer_operator());
+    cordon.revocation_registry.revoke(ISSUER_ID, CREDENTIAL_ID);
+    cordon.revocation_registry.revoke(ISSUER_ID, CREDENTIAL_ID);
+}
+
+#[test]
+#[should_panic(expected: 'Caller is not the owner')]
+fn stranger_cannot_repoint_the_issuer_registry() {
+    let cordon = setup();
+
+    start_cheat_caller_address(cordon.revocation_registry.contract_address, stranger());
+    cordon.revocation_registry.set_issuer_registry(stranger());
+}
