@@ -1,0 +1,100 @@
+//! Public interfaces for the four Cordon contracts.
+//!
+//! Kept in one module so the gate can hold dispatchers for the registries without pulling in their
+//! implementations, and so the SDK has a single file to mirror.
+
+use starknet::ContractAddress;
+use crate::types::{Credential, OpenNoteDeposit, Policy};
+
+/// The set of keys allowed to attest, and the addresses that speak for them.
+///
+/// Owner-governed: only the registry owner adds or removes an issuer. An issuer id is claimed
+/// once and never rebound, so a credential signed under an id can always be traced to the key that
+/// was registered under it.
+#[starknet::interface]
+pub trait IIssuerRegistry<TState> {
+    /// Registers a new issuer. Owner only.
+    fn register_issuer(
+        ref self: TState, issuer_id: felt252, public_key: felt252, metadata_uri: ByteArray,
+    );
+    /// Sets the address allowed to revoke this issuer's credentials. Owner only.
+    fn set_issuer_operator(ref self: TState, issuer_id: felt252, operator: ContractAddress);
+    /// Takes an issuer out of service. Owner only, and permanent for that id.
+    fn deactivate_issuer(ref self: TState, issuer_id: felt252);
+    /// The issuer's attesting public key, or zero if the issuer is unknown or inactive.
+    fn issuer_public_key(self: @TState, issuer_id: felt252) -> felt252;
+    /// The address allowed to revoke this issuer's credentials, or zero if none is set.
+    fn issuer_operator(self: @TState, issuer_id: felt252) -> ContractAddress;
+    /// Off-chain metadata (name, disclosure policy, contact) for this issuer.
+    fn issuer_metadata_uri(self: @TState, issuer_id: felt252) -> ByteArray;
+    /// Whether the issuer is registered and still allowed to attest.
+    fn is_issuer_active(self: @TState, issuer_id: felt252) -> bool;
+}
+
+/// Issuer-scoped revocation of individual credentials.
+///
+/// Revocation is the issuer's power, not the registry owner's: an issuer that learns a subject no
+/// longer qualifies must be able to withdraw the attestation without asking anyone.
+#[starknet::interface]
+pub trait IRevocationRegistry<TState> {
+    /// Revokes one credential. Callable only by the issuer's registered operator.
+    fn revoke(ref self: TState, issuer_id: felt252, credential_id: felt252);
+    /// Whether this issuer has revoked this credential id.
+    fn is_revoked(self: @TState, issuer_id: felt252, credential_id: felt252) -> bool;
+    /// The issuer registry this contract reads operator rights from.
+    fn issuer_registry(self: @TState) -> ContractAddress;
+    /// Re-points the issuer registry, for a registry migration. Owner only.
+    fn set_issuer_registry(ref self: TState, issuer_registry: ContractAddress);
+}
+
+/// Named, versioned rule sets.
+#[starknet::interface]
+pub trait IPolicyRegistry<TState> {
+    /// Publishes a policy under a fresh id. Owner only, and immutable afterwards.
+    fn publish_policy(ref self: TState, policy_id: felt252, policy: Policy);
+    /// Clears a published policy's `active` flag. Owner only, one-way.
+    fn retire_policy(ref self: TState, policy_id: felt252);
+    /// The policy published under `policy_id`. Panics with `CORDON_NO_POLICY` if there is none.
+    fn get_policy(self: @TState, policy_id: felt252) -> Policy;
+    /// Whether anything has ever been published under `policy_id`, retired or not.
+    fn policy_exists(self: @TState, policy_id: felt252) -> bool;
+}
+
+/// The enforcement point: an anonymizer the privacy pool calls mid-transaction.
+#[starknet::interface]
+pub trait IPolicyGate<TState> {
+    /// Gates one settlement of pool value against a published policy.
+    ///
+    /// Called by the privacy pool through `selector!("privacy_invoke")` as part of an `Invoke`
+    /// action. Every refusal panics, and a panic here reverts the pool transaction whole, so
+    /// value that fails the policy never leaves the shielded set.
+    fn privacy_invoke(
+        ref self: TState,
+        token: ContractAddress,
+        pool_address: ContractAddress,
+        note_id: felt252,
+        policy_id: felt252,
+        payer: Credential,
+        payer_sig_r: felt252,
+        payer_sig_s: felt252,
+        nonce: felt252,
+    ) -> Span<OpenNoteDeposit>;
+    /// Whether this `(subject_public_key, nonce)` pair has already settled.
+    fn is_nonce_used(self: @TState, subject_public_key: felt252, nonce: felt252) -> bool;
+    /// Value already booked against a subject inside one epoch of one policy.
+    fn epoch_spend(
+        self: @TState, subject_public_key: felt252, policy_id: felt252, epoch_index: u64,
+    ) -> u128;
+    /// The epoch index a settlement would be booked into right now. Zero for policies with no
+    /// velocity limit.
+    fn current_epoch(self: @TState, policy_id: felt252) -> u64;
+    /// The registries this gate reads: `(issuer, revocation, policy)`.
+    fn registries(self: @TState) -> (ContractAddress, ContractAddress, ContractAddress);
+    /// Re-points the registries, for a registry migration. Owner only.
+    fn set_registries(
+        ref self: TState,
+        issuer_registry: ContractAddress,
+        revocation_registry: ContractAddress,
+        policy_registry: ContractAddress,
+    );
+}

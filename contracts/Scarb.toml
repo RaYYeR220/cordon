@@ -1,0 +1,30 @@
+[package]
+name = "cordon"
+version = "0.1.0"
+edition = "2024_07"
+description = "Credential and policy gate for shielded STRK20 value on Starknet"
+license = "MIT"
+
+[dependencies]
+starknet = "2.18.0"
+openzeppelin = "3.0.0"
+
+[dev-dependencies]
+snforge_std = "0.63.0"
+assert_macros = "2.18.0"
+
+[[target.starknet-contract]]
+sierra = true
+casm = true
+
+[scripts]
+test = "snforge test"
+
+[tool.fmt]
+sort-module-level-items = true
+
+[tool.scarb]
+allow-prebuilt-plugins = ["snforge_std"]
+
+[profile.release.cairo]
+inlining-strategy = "default"
