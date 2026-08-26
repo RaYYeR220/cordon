@@ -82,3 +82,131 @@ pub struct Issuer {
     /// Whether the issuer may still attest. Deactivation is permanent for a given `issuer_id`.
     pub active: bool,
 }
+
+/// Where a settlement stands. **Never reorder these variants and never move `#[default]`** — a
+/// stored settlement is read back by variant index, so reordering silently reinterprets every
+/// settlement already written.
+///
+/// `None` is the default a never-funded id reads back as, which is what makes "this settlement id
+/// is free" a single comparison.
+#[derive(Drop, Serde, Copy, PartialEq, Debug, starknet::Store, Default)]
+pub enum SettlementStatus {
+    /// Nothing has ever been funded under this id.
+    #[default]
+    None,
+    /// Funded and waiting. The gate is holding the value.
+    Funded,
+    /// The payee presented a credential the claim policy accepts and took the value.
+    Claimed,
+    /// The window closed unclaimed and the payer took the value back.
+    Refunded,
+}
+
+/// Value the gate is holding between a `Fund` and its `Claim` or `Refund`.
+///
+/// The gate is a custodian for exactly as long as this record says `Funded`. Everything needed to
+/// resolve the settlement is here, because neither later leg can be trusted to restate it: the
+/// claimant supplies only a settlement id and their own credential.
+#[derive(Drop, Serde, Copy, PartialEq, Debug, starknet::Store)]
+pub struct Settlement {
+    /// The ERC20 held. Both later legs must name the same one.
+    pub token: ContractAddress,
+    /// The exact amount held. Read from here, never from `balance_of` — the gate can hold several
+    /// settlements in the same token at once.
+    pub amount: u128,
+    /// The pseudonym that funded it, and the only one that can refund it.
+    pub payer_subject_key: felt252,
+    /// The policy the payer satisfied when funding. Bound into the refund signature.
+    pub payer_policy_id: felt252,
+    /// The policy a claimant has to satisfy to take the value.
+    pub payee_claim_policy_id: felt252,
+    /// Unix seconds. A claim must land before this; a refund cannot land before it.
+    pub expires_at: u64,
+    pub status: SettlementStatus,
+}
+
+/// A subject proving, in one call, both who they are and that they authorised this settlement.
+///
+/// The payer uses it on `Direct` and `Fund`; the payee uses the identical shape on `Claim`. One
+/// type, because a payee check that drifted from a payer check would be a hole nobody notices.
+#[derive(Drop, Serde, Copy, PartialEq, Debug)]
+pub struct SubjectAuthorization {
+    /// The published policy to enforce against the credential.
+    pub policy_id: felt252,
+    /// The issuer-signed credential.
+    pub credential: Credential,
+    /// `r` of the subject's signature over
+    /// [`subject_action_hash`](crate::hashing::subject_action_hash).
+    pub sig_r: felt252,
+    /// `s` of the same signature.
+    pub sig_s: felt252,
+    /// Subject-chosen, single-use per `(subject_public_key, nonce)`.
+    pub nonce: felt252,
+}
+
+/// The terms a payer sets when funding a two-step settlement.
+#[derive(Drop, Serde, Copy, PartialEq, Debug)]
+pub struct FundTerms {
+    /// The payer's own authorisation. The full payer policy is enforced on the funding leg.
+    pub payer: SubjectAuthorization,
+    /// Chosen by the payer, and the handle both later legs quote. Claimed once, ever.
+    pub settlement_id: felt252,
+    /// The policy the payee will have to satisfy. Must already be published and active.
+    pub payee_claim_policy_id: felt252,
+    /// When the claim window closes and the refund window opens.
+    pub expires_at: u64,
+}
+
+/// A payee taking a funded settlement, authenticated by their own key.
+///
+/// This is the whole point of two-step settlement: the payer cannot vouch for the payee, so the
+/// payee vouches for themselves, in their own transaction, at claim time.
+#[derive(Drop, Serde, Copy, PartialEq, Debug)]
+pub struct ClaimTerms {
+    /// Which settlement to take.
+    pub settlement_id: felt252,
+    /// The payee's issuer-signed credential, checked against `payee_claim_policy_id`.
+    pub credential: Credential,
+    /// `r` of the payee's signature over the action hash.
+    pub sig_r: felt252,
+    /// `s` of the same signature.
+    pub sig_s: felt252,
+    /// The payee's nonce, single-use per `(subject_public_key, nonce)`.
+    pub nonce: felt252,
+}
+
+/// A payer taking back a settlement nobody claimed.
+#[derive(Drop, Serde, Copy, PartialEq, Debug)]
+pub struct RefundTerms {
+    /// Which settlement to unwind.
+    pub settlement_id: felt252,
+    /// `r` of the payer's signature over the action hash.
+    pub sig_r: felt252,
+    /// `s` of the same signature.
+    pub sig_s: felt252,
+    /// The payer's nonce for this refund. A refund is an authorisation like any other.
+    pub nonce: felt252,
+}
+
+/// Which leg of which flow the pool is invoking.
+///
+/// One gate serves both a direct payment and the three legs of a two-step settlement, because the
+/// pool calls a single `privacy_invoke` selector. Each variant carries exactly the data its leg
+/// needs and nothing it does not, so no caller ever passes a field the contract ignores.
+///
+/// **Never reorder these variants** — the discriminant is the first felt of the calldata.
+#[derive(Serde, Copy, Drop, PartialEq, Debug)]
+pub enum GateOperation {
+    /// Payer policy only, settled straight into an open note.
+    /// Action array: `withdraw → transfer(OPEN) → invoke`.
+    Direct: SubjectAuthorization,
+    /// Enforce the payer policy and park the value with the gate.
+    /// Action array: `withdraw → invoke`. Returns an empty span: there is no note to fill yet.
+    Fund: FundTerms,
+    /// The payee's own transaction, taking a funded settlement into their note.
+    /// Action array: `transfer(OPEN, recipient: self) → invoke`. The payee funds nothing.
+    Claim: ClaimTerms,
+    /// The payer taking back a settlement the window closed on.
+    /// Action array: `transfer(OPEN, recipient: self) → invoke`.
+    Refund: RefundTerms,
+}

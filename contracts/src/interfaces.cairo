@@ -4,7 +4,7 @@
 //! implementations, and so the SDK has a single file to mirror.
 
 use starknet::ContractAddress;
-use crate::types::{Credential, OpenNoteDeposit, Policy};
+use crate::types::{GateOperation, OpenNoteDeposit, Policy, Settlement};
 
 /// The set of keys allowed to attest, and the addresses that speak for them.
 ///
@@ -63,23 +63,29 @@ pub trait IPolicyRegistry<TState> {
 /// The enforcement point: an anonymizer the privacy pool calls mid-transaction.
 #[starknet::interface]
 pub trait IPolicyGate<TState> {
-    /// Gates one settlement of pool value against a published policy.
+    /// Runs one leg of a gated payment.
     ///
     /// Called by the privacy pool through `selector!("privacy_invoke")` as part of an `Invoke`
-    /// action. Every refusal panics, and a panic here reverts the pool transaction whole, so
-    /// value that fails the policy never leaves the shielded set.
+    /// action. `operation` selects the leg; see [`GateOperation`] for what each one carries and
+    /// which action array the wallet builds for it. Every refusal panics, and a panic here reverts
+    /// the pool transaction whole, so value that fails a policy never leaves the shielded set.
+    ///
+    /// `pool_address` is the wallet's `${poolAddress}` substitution and must equal the caller.
+    /// `note_id` is `${openNoteIds[0]}`; the `Fund` leg has no open note and ignores it.
     fn privacy_invoke(
         ref self: TState,
+        operation: GateOperation,
         token: ContractAddress,
         pool_address: ContractAddress,
         note_id: felt252,
-        policy_id: felt252,
-        payer: Credential,
-        payer_sig_r: felt252,
-        payer_sig_s: felt252,
-        nonce: felt252,
     ) -> Span<OpenNoteDeposit>;
-    /// Whether this `(subject_public_key, nonce)` pair has already settled.
+    /// The settlement booked under `settlement_id`. Reads back with
+    /// [`SettlementStatus::None`](crate::types::SettlementStatus) if there is none.
+    fn get_settlement(self: @TState, settlement_id: felt252) -> Settlement;
+    /// Value the gate owes to settlements that are still open, in one token. Anything above this
+    /// in the gate's balance is value the pool just sent.
+    fn committed_balance(self: @TState, token: ContractAddress) -> u128;
+    /// Whether this `(subject_public_key, nonce)` pair has already been spent, on any leg.
     fn is_nonce_used(self: @TState, subject_public_key: felt252, nonce: felt252) -> bool;
     /// Value already booked against a subject inside one epoch of one policy.
     fn epoch_spend(

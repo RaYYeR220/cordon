@@ -20,7 +20,7 @@ use crate::tests::common::{
     MAX_AMOUNT, NONCE, NOTE_ID, OTHER_ISSUER_ID, POLICY_ID, SETTLE_AMOUNT, START_TIME,
     default_policy, issuer_operator, owner, setup, setup_with_policy, stranger,
 };
-use crate::types::{Credential, OpenNoteDeposit};
+use crate::types::{Credential, GateOperation, OpenNoteDeposit, SubjectAuthorization};
 
 /// Signs a credential with `key`, ignoring whatever signature fields it arrives with.
 fn sign_credential(key: KeyPair<felt252, felt252>, credential: Credential) -> Credential {
@@ -155,20 +155,16 @@ fn a_direct_call_from_a_non_pool_caller_is_refused() {
     let cordon = setup();
 
     let credential = cordon.credential();
-    let (payer_sig_r, payer_sig_s) = cordon.sign_action(SETTLE_AMOUNT, NONCE, NOTE_ID);
+    let (sig_r, sig_s) = cordon.sign_action(SETTLE_AMOUNT, NONCE, NOTE_ID);
+    let payer = SubjectAuthorization {
+        policy_id: POLICY_ID, credential, sig_r, sig_s, nonce: NONCE,
+    };
 
     start_cheat_caller_address(cordon.gate.contract_address, stranger());
     cordon
         .gate
         .privacy_invoke(
-            cordon.token,
-            cordon.pool.contract_address,
-            NOTE_ID,
-            POLICY_ID,
-            credential,
-            payer_sig_r,
-            payer_sig_s,
-            NONCE,
+            GateOperation::Direct(payer), cordon.token, cordon.pool.contract_address, NOTE_ID,
         );
 }
 
@@ -180,21 +176,20 @@ fn a_pool_address_that_is_not_the_caller_is_refused() {
     let cordon = setup();
 
     let credential = cordon.credential();
-    let (payer_sig_r, payer_sig_s) = cordon.sign_action(SETTLE_AMOUNT, NONCE, NOTE_ID);
+    let (sig_r, sig_s) = cordon.sign_action(SETTLE_AMOUNT, NONCE, NOTE_ID);
+    let payer = SubjectAuthorization {
+        policy_id: POLICY_ID, credential, sig_r, sig_s, nonce: NONCE,
+    };
 
     cordon
         .pool
-        .settle(
+        .apply_actions(
             gate: cordon.gate.contract_address,
+            operation: GateOperation::Direct(payer),
             token: cordon.token,
-            amount: SETTLE_AMOUNT.into(),
+            withdrawn: SETTLE_AMOUNT.into(),
             claimed_pool_address: stranger(),
             note_id: NOTE_ID,
-            policy_id: POLICY_ID,
-            payer: credential,
-            :payer_sig_r,
-            :payer_sig_s,
-            nonce: NONCE,
         );
 }
 
@@ -282,7 +277,6 @@ fn a_credential_from_an_issuer_the_policy_does_not_pin_is_refused() {
             sig_s: 0,
         },
     );
-
     let (payer_sig_r, payer_sig_s) = cordon.sign_action(SETTLE_AMOUNT, NONCE, NOTE_ID);
     cordon.settle_raw(SETTLE_AMOUNT, credential, payer_sig_r, payer_sig_s, NONCE);
 }
@@ -404,6 +398,22 @@ fn exceeding_the_epoch_aggregate_is_refused() {
     cordon.settle_with_nonce(MAX_AMOUNT, 'nonce_a');
     cordon.settle_with_nonce(MAX_AMOUNT, 'nonce_b');
     cordon.settle_with_nonce(MAX_AMOUNT, 'nonce_c');
+}
+
+/// 9d. The `:V2` binding: a signature made for a different deployment does not verify here, even
+///     though every field a `:V1` message carried is identical.
+#[test]
+#[should_panic(expected: 'CORDON_BAD_SUBJECT_SIG')]
+fn a_signature_bound_to_another_gate_is_refused() {
+    let cordon = setup();
+    let elsewhere = setup();
+
+    let credential = cordon.credential();
+    // Signed against the second deployment's gate address, replayed against the first.
+    let (sig_r, sig_s) = elsewhere
+        .sign_action_as(cordon.subject_key, POLICY_ID, NOTE_ID, SETTLE_AMOUNT, NONCE);
+
+    cordon.settle_raw(SETTLE_AMOUNT, credential, sig_r, sig_s, NONCE);
 }
 
 //

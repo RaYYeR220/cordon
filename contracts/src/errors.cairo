@@ -24,6 +24,9 @@ pub mod gate {
     pub const NO_VALUE: felt252 = 'CORDON_NO_VALUE';
     /// The balance handed to the gate does not fit the pool's `u128` deposit amount.
     pub const AMOUNT_OVERFLOW: felt252 = 'CORDON_AMOUNT_OVERFLOW';
+    /// The gate holds less than it has promised to open settlements. Unreachable through the
+    /// contract's own logic; it would mean the token moved value out from under it.
+    pub const BALANCE_SHORTFALL: felt252 = 'CORDON_BALANCE_SHORTFALL';
     /// The credential's issuer is unknown, deactivated, or not the issuer the policy pins.
     pub const BAD_ISSUER: felt252 = 'CORDON_BAD_ISSUER';
     /// The issuer signature over the credential hash does not verify.
@@ -42,6 +45,35 @@ pub mod gate {
     pub const OVER_CAP: felt252 = 'CORDON_OVER_CAP';
     /// The settlement would push this subject past the policy's per-epoch aggregate.
     pub const OVER_VELOCITY: felt252 = 'CORDON_OVER_VELOCITY';
+}
+
+/// Refusals specific to two-step settlement — the `Fund`, `Claim` and `Refund` legs.
+///
+/// The credential checks on a claim reuse the [`gate`] codes above: a payee whose issuer was
+/// deactivated is `CORDON_BAD_ISSUER`, a revoked payee is `CORDON_REVOKED`, and so on. The leg is
+/// obvious from the transaction; duplicating the whole table with a `PAYEE_` prefix would only
+/// double what an integrator has to learn.
+pub mod settlement {
+    /// Settlement id zero is reserved as "no settlement".
+    pub const ZERO_SETTLEMENT_ID: felt252 = 'CORDON_ZERO_SETTLEMENT';
+    /// This id has already been used. Ids are single-use, claimed or refunded or still open.
+    pub const SETTLEMENT_EXISTS: felt252 = 'CORDON_SETTLEMENT_EXISTS';
+    /// Nothing was ever funded under this id.
+    pub const NO_SETTLEMENT: felt252 = 'CORDON_NO_SETTLEMENT';
+    /// The value has already gone to the payee.
+    pub const ALREADY_CLAIMED: felt252 = 'CORDON_ALREADY_CLAIMED';
+    /// The value has already gone back to the payer.
+    pub const ALREADY_REFUNDED: felt252 = 'CORDON_ALREADY_REFUNDED';
+    /// The claim window has closed; only a refund is possible now.
+    pub const CLAIM_EXPIRED: felt252 = 'CORDON_CLAIM_EXPIRED';
+    /// The claim window is still open; the payee may yet turn up.
+    pub const REFUND_TOO_EARLY: felt252 = 'CORDON_REFUND_TOO_EARLY';
+    /// The claim window would close in the past, so nobody could ever claim.
+    pub const BAD_EXPIRY: felt252 = 'CORDON_BAD_EXPIRY';
+    /// The leg names a different token than the settlement holds.
+    pub const TOKEN_MISMATCH: felt252 = 'CORDON_TOKEN_MISMATCH';
+    /// A later leg carries its own value. Only the funding leg is fed by the pool.
+    pub const UNEXPECTED_VALUE: felt252 = 'CORDON_UNEXPECTED_VALUE';
 }
 
 /// Refusals raised by [`IssuerRegistry`](crate::issuer_registry::IssuerRegistry).
