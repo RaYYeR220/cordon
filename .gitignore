@@ -1,0 +1,39 @@
+# dependencies
+node_modules/
+
+# builds
+.next/
+out/
+dist/
+build/
+target/
+coverage/
+*.tsbuildinfo
+
+# cairo
+contracts/target/
+.snfoundry_cache/
+
+# environment and secrets
+.env
+.env.*
+!.env.example
+*.key.json
+*.account.json
+accounts.json
+wallet/
+
+# working notes, kept out of the published repository
+internal/
+notes/
+scratch/
+design/
+*-backup*
+*.bundle
+
+# editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
