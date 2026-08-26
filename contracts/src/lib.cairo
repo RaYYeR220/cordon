@@ -35,6 +35,7 @@ pub mod errors;
 pub mod hashing;
 pub mod interfaces;
 pub mod issuer_registry;
+pub mod policy_gate;
 pub mod policy_registry;
 pub mod revocation_registry;
 pub mod types;
