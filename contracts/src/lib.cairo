@@ -34,4 +34,5 @@
 pub mod errors;
 pub mod hashing;
 pub mod interfaces;
+pub mod issuer_registry;
 pub mod types;
