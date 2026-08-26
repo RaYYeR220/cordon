@@ -1,0 +1,220 @@
+# Cordon issuer
+
+The attestation service. It screens a public Starknet address against the **live U.S. Treasury
+OFAC sanctions lists** and signs a `NOT_SANCTIONED` credential — or refuses, and records why.
+
+There is no mock in here and no sample data path. The lists it reads are the ones OFAC publishes,
+fetched over the network, parsed from OFAC's own XML schema, and cached with the fetch timestamp
+and the resolved source URL attached to every decision. When those lists cannot be reached, the
+service says `unavailable` and issues nothing. It never falls back to a default-clean answer.
+
+## Why that last paragraph is the whole point
+
+A compliance checkmark is only worth what the check behind it was worth. A screening service that
+answers "clean" when it could not reach its source has not screened anything; it has produced a
+signature that somebody downstream will rely on. So the failure behaviour is a first-class feature
+here, and `test/screening.test.ts` exercises every way the lookup can fail:
+
+- the host is unreachable
+- the source returns an HTTP error
+- the source returns something that is not a sanctions list (an error page served with a 200 is the
+  nastiest case: it parses fine and contains no listed addresses, which is indistinguishable from a
+  clean list unless it is rejected outright)
+- only some of the sources answer — a partial snapshot is a screen with a hole in it
+- the cached snapshot is older than the freshness limit
+
+Every one of those answers `unavailable`, and every one is recorded.
+
+## What it attests, and what it does not
+
+One claim: `NOT_SANCTIONED`. That is the only thing this service has a real source for, so it is
+the only thing it will sign. It does not issue `ACCREDITED` or `KYC_L2` — those need a different
+issuer with a different source of truth, registered under a different issuer id.
+
+Two honest limits, stated because they matter:
+
+- **OFAC lists no Starknet addresses today.** The 1,007 digital-currency addresses on the current
+  SDN list are filed under 20 assets — `XBT`, `ETH`, `TRX`, `USDT`, `SOL` and others — and `STRK`
+  is not among them. The applicant's address is screened against the entire set regardless, in
+  padded, unpadded and prefixless forms, so the day OFAC adds one it is caught with no code change.
+  `GET /health` prints the asset list so this is visible rather than assumed.
+- **The screening covers the address you give it.** It is an address screen, not an identity
+  screen: it does not check names, does not do fuzzy matching on people, and does not trace funds.
+  It answers exactly one question — is this address on the list — and says so.
+
+## Privacy
+
+The address is screened and recorded. It never enters the credential.
+
+What the credential carries is the subject's **pseudonym**: a STARK-curve public key the holder
+generated locally, with no link to any wallet. That is what makes it presentable on chain without
+tying the subject to the wallet that was screened, and there is a test asserting the screened
+address does not appear anywhere in the issued credential.
+
+## Running it
+
+```sh
+cp .env.example .env      # then set ISSUER_PRIVATE_KEY
+npm install
+npm run refresh           # optional: warm the sanctions cache and print its provenance
+npm run dev               # or: npm run build && npm start
+```
+
+The SDK is a workspace dependency (`file:../../packages/sdk`) and builds itself on install.
+
+`npm run refresh` prints exactly what was fetched, which is what you want in front of an audience:
+
+```
+fetched 2026-08-26T21:20:11.029Z
+
+  https://www.treasury.gov/ofac/downloads/sdn.xml
+    resolved to   https://…/SDN.XML
+    published     08/26/2026
+    records       19319
+    entries       19319
+    addresses     1007
+    bytes         28966364
+
+  https://www.treasury.gov/ofac/downloads/consolidated/consolidated.xml
+    published     07/27/2026
+    records       481
+    addresses     0
+
+  1007 digital-currency addresses across 20 assets:
+    ARB BCH BNB BSC BSV BTG DASH DOGE ETC ETH LTC SOL TRX USDC USDT XBT XMR XRP XVG ZEC
+```
+
+## Endpoints
+
+| Method | Path | What it does |
+| --- | --- | --- |
+| `GET` | `/issuer` | The issuer id and the public key a registry owner needs for `register_issuer` |
+| `GET` | `/health` | Whether the sanctions snapshot is fresh enough to issue against. 503 when it is not |
+| `POST` | `/credentials` | Screen an address, then sign or refuse |
+| `GET` | `/credentials` | Every credential issued, with the screening that justified it |
+| `GET` | `/credentials/:id` | One credential |
+| `POST` | `/credentials/:id/revoke` | Withdraw a credential. Admin token |
+| `GET` | `/refusals` | Every screening that did not produce a credential |
+| `POST` | `/ofac/refresh` | Force a snapshot refresh. Admin token |
+
+### Requesting a credential
+
+```sh
+curl -X POST localhost:8787/credentials -H 'content-type: application/json' -d '{
+  "subjectPublicKey": "0x1ce8adcb0d0e5e0d0a3e2b8b8f9e5c3b2a1908070605040302010f0e0d0c0b0",
+  "address": "0x0511f0e5d0ce2b0b1e1a3d4c5b6a79887766554433221100ffeeddccbbaa9988"
+}'
+```
+
+`201` — signed, with the credential, its compact form for a QR code, and the screening:
+
+```json
+{
+  "issued": true,
+  "claim": "NOT_SANCTIONED",
+  "credential": { "issuerId": "0x434f52444f4e5f4f464143", "…": "…" },
+  "compact": "AQAAAAAAAAAA…",
+  "screening": {
+    "status": "clear",
+    "comparedForms": ["0x0511f0…", "0x00…0511f0…", "0511f0…"],
+    "provenance": {
+      "fetchedAt": "2026-08-26T21:20:11.029Z",
+      "ageSeconds": 85,
+      "addressCount": 1007,
+      "assets": ["ARB", "BCH", "…"],
+      "sources": [{ "url": "https://www.treasury.gov/ofac/downloads/sdn.xml", "publishDate": "08/26/2026" }]
+    }
+  }
+}
+```
+
+`403` — the address is listed. This is a real response to a real SDN entry:
+
+```json
+{
+  "issued": false,
+  "error": "sanctioned",
+  "message": "Listed by OFAC under Behzad MESRI. No credential will be issued.",
+  "screening": {
+    "status": "match",
+    "matches": [{ "asset": "ETH", "name": "Behzad MESRI", "programs": ["CYBER2", "HRIT-IR"], "entryUid": "24003" }]
+  }
+}
+```
+
+`503` — nothing was concluded, so nothing was signed:
+
+```json
+{
+  "issued": false,
+  "error": "unavailable",
+  "message": "Sanctions screening is unavailable, so nothing was checked and nothing will be issued. …"
+}
+```
+
+The two are deliberately different status codes. `403` is a decision the caller should act on.
+`503` is the absence of a decision and the caller should retry, not conclude anything.
+
+## Signing
+
+Credentials are signed by `@cordon/sdk`'s `issueCredential`, which hashes the fields with the same
+Poseidon preimage `PolicyGate` verifies against and signs it with the STARK curve. This service
+contains no hash function of its own — reimplementing one would be the single most likely way to
+produce credentials the chain refuses as `CORDON_BAD_CRED` with no explanation.
+
+To put this issuer into service on chain, take the public key from `GET /issuer` and register it:
+
+```cairo
+IssuerRegistry::register_issuer('CORDON_OFAC', <publicKey>, "https://…/issuer.json")
+```
+
+Then publish a policy that requires the claim:
+
+```cairo
+PolicyRegistry::publish_policy('PAY_CLEAN_V1', Policy {
+    required_claim: 'NOT_SANCTIONED',
+    issuer_id: 'CORDON_OFAC',
+    ..
+})
+```
+
+## Revocation
+
+`POST /credentials/:id/revoke` records the issuer's decision and requires a reason — a revocation
+without one is unauditable. It does **not**, on its own, stop the credential settling: the gate
+reads the on-chain `RevocationRegistry`, so the operator still has to call `revoke` there. The
+response says so explicitly rather than implying the credential is already dead everywhere.
+
+## Key handling
+
+- The signing key comes from `ISSUER_PRIVATE_KEY` and nowhere else. There is no file fallback and
+  no default.
+- It is never logged. `redactConfig` — what the service actually logs at startup — does not merely
+  mask the key, it omits the field, because a masked field is one refactor away from an unmasked
+  one. A test asserts the key does not appear in it.
+- No endpoint returns it. A test asserts `GET /issuer` does not contain it.
+- `.env` is gitignored; `.env.example` is what is committed.
+
+## Storage
+
+One JSON file, written atomically, holding every issued credential with its screening, and every
+refusal. The refusals are the more interesting half: an issuer that can only show you its successes
+cannot show you it was ever working.
+
+## Tests
+
+```sh
+npm test                  # the unit and HTTP suites, no network
+OFAC_LIVE=1 npm test      # …plus the live Treasury endpoints
+```
+
+The default suite drives the real parser, the real cache and the real HTTP surface against an
+injected source, so nothing that matters is stubbed. The live suite is opt-in because a unit suite
+that fails when a government web server is slow tells you nothing about your code; run it before a
+deployment to confirm the sources still answer and still have the shape this service parses. It
+asserts nothing about *which* addresses are listed — that changes whenever OFAC publishes, and a
+test that pinned today's list would be a test that fails for being right.
+
+## Licence
+
+MIT.
