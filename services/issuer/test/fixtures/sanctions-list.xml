@@ -1,0 +1,99 @@
+<?xml version="1.0" standalone="yes"?>
+<sdnList xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/XML">
+  <publshInformation>
+    <Publish_Date>01/15/2026</Publish_Date>
+    <Record_Count>4</Record_Count>
+  </publshInformation>
+  <!--
+    A miniature list in OFAC's real schema. The names and addresses are invented; only the shape
+    is copied, so the parser is tested without putting real listed individuals in the repository.
+    Every element the parser reads appears here at least once, plus several it must ignore.
+  -->
+  <sdnEntry>
+    <uid>10001</uid>
+    <lastName>EXAMPLE SHIPPING LTD</lastName>
+    <sdnType>Entity</sdnType>
+    <programList>
+      <program>CUBA</program>
+    </programList>
+    <addressList>
+      <address>
+        <uid>25</uid>
+        <city>Havana</city>
+        <country>Cuba</country>
+      </address>
+    </addressList>
+  </sdnEntry>
+  <sdnEntry>
+    <uid>10002</uid>
+    <firstName>Pat</firstName>
+    <lastName>EXAMPLE-PERSON</lastName>
+    <sdnType>Individual</sdnType>
+    <programList>
+      <program>CYBER2</program>
+      <program>DPRK3</program>
+    </programList>
+    <idList>
+      <id>
+        <uid>20001</uid>
+        <idType>Gender</idType>
+        <idNumber>Male</idNumber>
+      </id>
+      <id>
+        <uid>20002</uid>
+        <idType>Email Address</idType>
+        <idNumber>nobody@example.invalid</idNumber>
+      </id>
+      <id>
+        <uid>20003</uid>
+        <idType>Digital Currency Address - ETH</idType>
+        <idNumber>0xAAAABBBBCCCCDDDDEEEEFFFF0000111122223333</idNumber>
+      </id>
+      <id>
+        <uid>20004</uid>
+        <idType>Digital Currency Address - XBT</idType>
+        <idNumber>1ExampleBitcoinAddressDoNotUse00000</idNumber>
+      </id>
+    </idList>
+  </sdnEntry>
+  <sdnEntry>
+    <uid>10003</uid>
+    <lastName>EXAMPLE MIXER</lastName>
+    <sdnType>Entity</sdnType>
+    <programList>
+      <program>CYBER2</program>
+    </programList>
+    <idList>
+      <id>
+        <uid>20005</uid>
+        <idType>Digital Currency Address - STRK</idType>
+        <idNumber>0x04a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f</idNumber>
+      </id>
+      <id>
+        <uid>20006</uid>
+        <idType>Digital Currency Address - TRX</idType>
+        <idNumber>TExampleTronAddressDoNotUse0000000</idNumber>
+      </id>
+      <id>
+        <uid>20007</uid>
+        <idType>Digital Currency Address - ETH</idType>
+        <idNumber>   </idNumber>
+      </id>
+    </idList>
+  </sdnEntry>
+  <sdnEntry>
+    <uid>10004</uid>
+    <lastName>EXAMPLE VESSEL</lastName>
+    <sdnType>Vessel</sdnType>
+    <programList>
+      <program>IRAN</program>
+    </programList>
+    <idList>
+      <id>
+        <uid>20008</uid>
+        <idType>Vessel Registration Identification</idType>
+        <idNumber>IMO 0000000</idNumber>
+      </id>
+    </idList>
+  </sdnEntry>
+</sdnList>

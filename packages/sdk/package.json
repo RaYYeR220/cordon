@@ -30,7 +30,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "vectors": "tsx scripts/print-vectors.ts",
-    "prepack": "npm run build"
+    "prepare": "npm run build"
   },
   "keywords": [
     "starknet",

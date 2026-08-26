@@ -1,0 +1,33 @@
+{
+  "name": "@cordon/issuer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cordon attestation service: screens a Starknet address against the live OFAC sanctions lists and signs a NOT_SANCTIONED credential, or refuses.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "refresh": "tsx scripts/refresh-ofac.ts"
+  },
+  "dependencies": {
+    "@cordon/sdk": "file:../../packages/sdk",
+    "fast-xml-parser": "^5.3.4",
+    "fastify": "^5.7.4",
+    "starknet": "^10.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
