@@ -1,0 +1,32 @@
+{
+  "name": "@cordon/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --webpack",
+    "build": "next build --webpack",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@starknet-io/get-starknet-discovery": "6.0.4",
+    "@starknet-io/get-starknet-wallet-standard": "6.0.4",
+    "next": "^16.3.3",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "starknet": "^10.4.0"
+  },
+  "devDependencies": {
+    "@starknet-io/types-js": "^0.10.3",
+    "@tailwindcss/postcss": "^4.1.0",
+    "@types/node": "^24.10.2",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.3",
+    "tailwindcss": "^4.1.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.68.0"
+  }
+}
