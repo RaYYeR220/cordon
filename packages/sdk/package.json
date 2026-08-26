@@ -1,0 +1,53 @@
+{
+  "name": "@cordon/sdk",
+  "version": "0.1.0",
+  "description": "Credential and policy gate for shielded STRK20 value on Starknet: hash preimages, STARK-curve signing, gate calldata and refusal decoding.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "vectors": "tsx scripts/print-vectors.ts",
+    "prepack": "npm run build"
+  },
+  "keywords": [
+    "starknet",
+    "cairo",
+    "privacy",
+    "strk20",
+    "credentials",
+    "compliance"
+  ],
+  "dependencies": {
+    "starknet": "^10.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.2",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
