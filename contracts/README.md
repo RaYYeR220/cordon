@@ -166,6 +166,23 @@ Three things are fixed at construction with no setter, and each one is load-bear
   it something else. Migrate by deploying a new gate and letting open settlements run out.
 - **A published policy's rules.** Only the `active` flag ever changes, and only one way.
 
+Because a wrong pointer is only fixable by redeploying, every one of them is readable from outside.
+You do not have to take our word for what this gate is wired to, and you should not have to read a
+deployment transaction's calldata to find out:
+
+```sh
+sncast call --contract-address <gate> --function privacy_pool
+sncast call --contract-address <gate> --function issuer_registry
+sncast call --contract-address <gate> --function revocation_registry
+sncast call --contract-address <gate> --function policy_registry
+```
+
+`registries` returns all three in one call if you would rather. `RevocationRegistry` exposes
+`issuer_registry` the same way, which matters because its promise that only an issuer's own
+operator can revoke rests on that pointer being fixed. There are no matching setters, and
+`test_gate::the_gate_has_no_registry_setter` asserts as much against the compiled ABI rather than
+in a comment.
+
 ## Dust, and the internal ledger
 
 Anyone can transfer tokens to the gate; nothing stops them and nothing should. So the gate never
