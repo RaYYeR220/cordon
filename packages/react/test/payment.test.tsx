@@ -37,6 +37,7 @@ import {
   defaultChainState,
   makeCredential,
   makeRpc,
+  payeeKey,
   revertReason,
   subjectKey,
   type ChainState,
@@ -263,7 +264,7 @@ describe("the note id the subject has to sign over", () => {
         leg="fund"
         amount={10n * ONE_STRK}
         noteId={null}
-        settlementId="0x9001"
+        payeeSubjectKey={payeeKey.publicKey}
         payeeClaimPolicyId="ACCREDITED"
         expiresAt={Math.floor(Date.now() / 1000) + 3600}
       />,
@@ -274,5 +275,24 @@ describe("the note id the subject has to sign over", () => {
     const actions = mocks.invoke.mock.calls[0]?.[0] as Array<Record<string, unknown>>;
     // withdraw -> invoke, with no open note: nothing comes back in this transaction.
     expect(actions.map((action) => action["type"])).toEqual(["withdraw", "invoke"]);
+  });
+
+  it("blocks a fund that names no payee, which anyone could then claim", async () => {
+    render(
+      <Harness
+        chain={defaultChainState()}
+        leg="fund"
+        amount={10n * ONE_STRK}
+        noteId={null}
+        payeeClaimPolicyId="ACCREDITED"
+        expiresAt={Math.floor(Date.now() / 1000) + 3600}
+      />,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Ready" }));
+    await waitFor(() => expect(screen.getByText("STRK20 ready")).toBeInTheDocument());
+
+    expect(screen.getByRole("button", { name: "Pay" })).toBeDisabled();
+    expect(screen.getByText(/Name the payee's pseudonym/)).toBeInTheDocument();
   });
 });

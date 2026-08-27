@@ -224,13 +224,44 @@ export async function readSettlement(
   }
 }
 
-/** Value the gate owes to settlements that are still open, in one token. */
-export async function readCommittedBalance(
+/** Value the gate has already promised to open settlements, in one token. */
+export async function readAccountedBalance(
   provider: ReadProvider,
   gate: Address,
   token: Address,
 ): Promise<Reading<bigint>> {
-  return big(await call(provider, gate, "committed_balance", [token]));
+  return big(await call(provider, gate, "accounted_balance", [token]));
+}
+
+/**
+ * What the gate holds *above* its own ledger — the value the pool just sent it.
+ *
+ * This is the number the gate compares against a signed amount, so it is what a pre-flight needs
+ * to predict `CORDON_UNDERFUNDED`. Both halves have to be read for the answer to mean anything, so
+ * one failed read makes the whole thing unavailable rather than half a subtraction.
+ */
+export async function readUnaccountedBalance(
+  provider: ReadProvider,
+  gate: Address,
+  token: Address,
+): Promise<Reading<bigint>> {
+  const [held, accounted] = await Promise.all([
+    call(provider, token, "balance_of", [gate]),
+    readAccountedBalance(provider, gate, token),
+  ]);
+  const balance = big(held);
+  if (!balance.available) return balance;
+  if (!accounted.available) return accounted;
+  const free = balance.value - accounted.value;
+  return available(free > 0n ? free : 0n);
+}
+
+/** The privacy pool this gate was constructed against. Fixed at deploy time; there is no setter. */
+export async function readPrivacyPool(
+  provider: ReadProvider,
+  gate: Address,
+): Promise<Reading<Address>> {
+  return felt(await call(provider, gate, "privacy_pool"));
 }
 
 /** The entrypoint selector for a contract function, for callers assembling their own reads. */

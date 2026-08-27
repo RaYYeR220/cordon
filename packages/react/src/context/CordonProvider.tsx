@@ -29,7 +29,7 @@ import {
   type ReactNode,
 } from "react";
 import { RpcProvider } from "starknet";
-import type { Refusal } from "@cordon/sdk";
+import { fetchGateContext, type GateContext, type Refusal } from "@cordon/sdk";
 
 import {
   connectWallet,
@@ -39,6 +39,7 @@ import {
   readRegistries,
   readShieldedBalances,
   resolveConfig,
+  unavailable,
   selectableWallets,
   watchWallets,
   type ConnectedWallet,
@@ -97,6 +98,17 @@ export interface CordonContextValue {
   /** The registries the gate trusts, from config or read off the gate. Null before the read. */
   registries: Reading<CordonRegistries> | null;
 
+  /**
+   * The chain id, gate and pool every authorisation is signed against, read from the chain.
+   *
+   * All three are inside the signed message, and two of them are easy to get wrong from
+   * configuration — a `chainId` default that is really Sepolia, or a pool address that is not the
+   * one the gate was constructed against. So they are read rather than assumed, and a configured
+   * pool that disagrees with `PolicyGate::privacy_pool()` fails here, before anything is signed,
+   * instead of becoming a `CORDON_BAD_POOL` revert the user pays for.
+   */
+  gateContext: Reading<GateContext> | null;
+
   refusals: SessionRefusal[];
   recordRefusal: (entry: Omit<SessionRefusal, "at"> & { at?: number }) => void;
 }
@@ -148,6 +160,7 @@ export function CordonProvider({
     config.registries ? { available: true, value: config.registries } : null,
   );
   const [refusals, setRefusals] = useState<SessionRefusal[]>([]);
+  const [gateContext, setGateContext] = useState<Reading<GateContext> | null>(null);
 
   const resolvedStorage = useMemo<CordonStorage | null>(() => {
     if (storage !== undefined) return storage;
@@ -190,6 +203,22 @@ export function CordonProvider({
       cancelled = true;
     };
   }, [provider, config.gateAddress, config.registries]);
+
+  // The chain id and the pool come from the node and the gate, never from the config alone. A
+  // mismatch here is a configuration bug worth surfacing before a signature is made against it.
+  useEffect(() => {
+    let cancelled = false;
+    void fetchGateContext(provider, config.gateAddress, { expectedPool: config.poolAddress })
+      .then((context) => {
+        if (!cancelled) setGateContext({ available: true, value: context });
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setGateContext(unavailable(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [provider, config.gateAddress, config.poolAddress]);
 
   const probe = useCallback(async (target: ConnectedWallet): Promise<void> => {
     setProbing(true);
@@ -265,6 +294,7 @@ export function CordonProvider({
       balances,
       refreshBalances,
       registries,
+      gateContext,
       refusals,
       recordRefusal,
     }),
@@ -284,6 +314,7 @@ export function CordonProvider({
       balances,
       refreshBalances,
       registries,
+      gateContext,
       refusals,
       recordRefusal,
     ],

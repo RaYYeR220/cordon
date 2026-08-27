@@ -21,7 +21,7 @@ import {
 } from "@cordon/sdk";
 import { hash, num } from "starknet";
 
-import type { RawEvent } from "../src/strk20/index.js";
+import { DEFAULT_POOL_ADDRESS, SN_MAIN, type RawEvent } from "../src/strk20/index.js";
 import { vi } from "vitest";
 
 export const GATE = "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -30,9 +30,13 @@ export const REVOCATION_REGISTRY = "0x022222222222222222222222222222222222222222
 export const POLICY_REGISTRY = "0x0333333333333333333333333333333333333333333333333333333333333333";
 export const TOKEN = "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d";
 export const PAYEE = "0x0444444444444444444444444444444444444444444444444444444444444444";
+/** The privacy pool the gate is built against, and what `privacy_pool()` answers. */
+export const POOL = DEFAULT_POOL_ADDRESS;
 
 export const issuerKey: SubjectKeypair = generateSubjectKeypair();
 export const subjectKey: SubjectKeypair = generateSubjectKeypair();
+/** The pseudonym a Fund names as the only party allowed to claim. */
+export const payeeKey: SubjectKeypair = generateSubjectKeypair();
 
 const ONE_STRK = 10n ** 18n;
 export { ONE_STRK };
@@ -88,6 +92,11 @@ export interface ChainState {
   /** The receipt `waitForTransaction` resolves with. */
   receipt: Record<string, unknown>;
   receiptError: Error | null;
+  /** What `privacy_pool()` answers. A different address here is a configuration mismatch. */
+  pool: string;
+  poolError: Error | null;
+  /** The gate's raw ERC20 balance, for the unaccounted-balance read. */
+  gateBalance: bigint;
 }
 
 export function defaultChainState(): ChainState {
@@ -105,6 +114,9 @@ export function defaultChainState(): ChainState {
     eventsError: null,
     receipt: { execution_status: "SUCCEEDED", finality_status: "ACCEPTED_ON_L2", events: [] },
     receiptError: null,
+    pool: POOL,
+    poolError: null,
+    gateBalance: 0n,
   };
 }
 
@@ -142,8 +154,13 @@ export function makeRpc(state: ChainState) {
       case "epoch_spend":
         if (state.epochSpend === null) throw new Error("the velocity counter did not answer");
         return [felt(state.epochSpend)];
-      case "committed_balance":
+      case "accounted_balance":
         return ["0x0"];
+      case "balance_of":
+        return [felt(state.gateBalance)];
+      case "privacy_pool":
+        if (state.poolError) throw state.poolError;
+        return [state.pool];
       default:
         throw new Error(`unexpected entrypoint ${entrypoint}`);
     }
@@ -156,12 +173,14 @@ export function makeRpc(state: ChainState) {
     },
   );
 
+  const getChainId = vi.fn(async () => SN_MAIN);
+
   const waitForTransaction = vi.fn(async () => {
     if (state.receiptError) throw state.receiptError;
     return state.receipt;
   });
 
-  return { callContract, getEvents, waitForTransaction, state };
+  return { callContract, getEvents, getChainId, waitForTransaction, state };
 }
 
 /**

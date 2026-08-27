@@ -30,8 +30,14 @@ export interface TransactionWaiter {
  * Declared structurally rather than as `RpcProvider` so a host app can hand `<CordonProvider>` the
  * provider it already has — including one wrapped in its own retry or caching layer — instead of
  * ending up with two connections to the same node.
+ *
+ * `getChainId` is here because an authorisation's signature covers the chain id, and a configured
+ * default that disagrees with the node produces signatures that verify nowhere. It is asked for
+ * rather than assumed.
  */
-export interface CordonRpc extends ReadProvider, EventProvider, TransactionWaiter {}
+export interface CordonRpc extends ReadProvider, EventProvider, TransactionWaiter {
+  getChainId(): Promise<string>;
+}
 
 export type SubmitOptions = {
   /** Called as soon as the wallet returns a hash, before confirmation. */

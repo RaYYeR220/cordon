@@ -1,9 +1,10 @@
 /**
- * Typed builders for STRK20 action arrays.
+ * The plain STRK20 actions the debug console exercises.
  *
- * A STRK20 transaction is an ordered array of actions the wallet proves and
- * submits atomically. These builders are the only place in the app that
- * constructs one, so the protocol's sharp edges live here rather than in the UI.
+ * These are shell operations — shield, private transfer, unshield, and a generic anonymizer
+ * round-trip — not Cordon settlements. The four gated legs are built by `@cordon/sdk`, and the
+ * action types, `validateActions` and `formatActions` come from `@cordon/react/strk20`, so there
+ * is one definition of what a valid action array is rather than one per package.
  */
 
 import { num } from "starknet";
@@ -13,13 +14,12 @@ import {
   openNoteIdPlaceholder,
   type Address,
   type Felt,
-  type Strk20Action,
   type Strk20CalldataItem,
   type Strk20DepositAction,
   type Strk20InvokeAction,
   type Strk20TransferAction,
   type Strk20WithdrawAction,
-} from "./types";
+} from "@cordon/react/strk20";
 
 /** Encode an amount as the 0x felt the wallet expects. */
 export function toFeltAmount(amount: bigint): Felt {
@@ -142,90 +142,4 @@ export function buildInvoke(params: {
     contract: normalizeAddress(params.contract, "contract"),
     calldata: params.calldata,
   };
-}
-
-/** Ordering the pool applies actions in. Positions must be non-decreasing. */
-const PHASE: Record<Strk20Action["type"], number> = {
-  deposit: 0,
-  withdraw: 1,
-  transfer: 2,
-  invoke: 3,
-};
-
-export type ActionProblem = {
-  code:
-    | "EMPTY"
-    | "INVOKE_ONLY"
-    | "MULTIPLE_INVOKES"
-    | "PHASE_ORDER"
-    | "INVOKE_WITHOUT_OPEN_NOTE"
-    | "OPEN_NOTE_WITHOUT_INVOKE";
-  message: string;
-};
-
-/**
- * Check an action array against the pool's assembly rules before paying a wallet
- * round-trip to learn the same thing. Returns every problem found, in order.
- */
-export function validateActions(actions: readonly Strk20Action[]): ActionProblem[] {
-  const problems: ActionProblem[] = [];
-
-  if (actions.length === 0) {
-    return [{ code: "EMPTY", message: "A STRK20 transaction needs at least one action." }];
-  }
-
-  const invokes = actions.filter((a) => a.type === "invoke");
-  const openNotes = actions.filter((a) => a.type === "transfer" && a.amount === OPEN_NOTE);
-
-  if (invokes.length === actions.length) {
-    problems.push({
-      code: "INVOKE_ONLY",
-      message:
-        "An invoke-only array is rejected by the wallet with INVALID_REQUEST_PAYLOAD. " +
-        "Route value through the contract first: withdraw -> transfer(OPEN) -> invoke.",
-    });
-  }
-  if (invokes.length > 1) {
-    problems.push({
-      code: "MULTIPLE_INVOKES",
-      message: `At most one invoke-phase action per transaction; this array has ${invokes.length}.`,
-    });
-  }
-
-  let previous = -1;
-  for (const [index, action] of actions.entries()) {
-    const phase = PHASE[action.type];
-    if (phase < previous) {
-      problems.push({
-        code: "PHASE_ORDER",
-        message:
-          `Action ${index} (${action.type}) runs in an earlier phase than the action before it. ` +
-          "Order actions deposit -> withdraw -> transfer -> invoke.",
-      });
-      break;
-    }
-    previous = phase;
-  }
-
-  if (invokes.length > 0 && openNotes.length === 0) {
-    problems.push({
-      code: "INVOKE_WITHOUT_OPEN_NOTE",
-      message:
-        "The invoked contract returns open-note deposits, but no transfer action with " +
-        'amount "OPEN" reserves a note for them.',
-    });
-  }
-  if (openNotes.length > 0 && invokes.length === 0) {
-    problems.push({
-      code: "OPEN_NOTE_WITHOUT_INVOKE",
-      message: 'A transfer with amount "OPEN" reserves a note that nothing in this transaction fills.',
-    });
-  }
-
-  return problems;
-}
-
-/** Pretty-print an action array exactly as it goes to the wallet. */
-export function formatActions(actions: readonly Strk20Action[]): string {
-  return JSON.stringify(actions, null, 2);
 }

@@ -70,6 +70,16 @@ The UI-free chain layer underneath is published separately as `@cordon/react/str
 discovery, the capability probe, balance reads, contract reads, gate-event decoding, error
 normalisation and submission, with no React anywhere in it.
 
+**The two entry points sit on opposite sides of React's server boundary**, deliberately.
+`@cordon/react` ships with `"use client"`, because it is hooks and components. `@cordon/react/strk20`
+does not, so a React Server Component, a route handler or a plain Node script can read a policy or
+decode gate events without pulling a client bundle in behind it.
+
+```ts
+// server component, route handler, script — no React involved
+import { readPolicy, readGateEvents } from "@cordon/react/strk20";
+```
+
 ## Components
 
 All of them accept `className`, render semantic markup, and take `headingLevel` where they own a

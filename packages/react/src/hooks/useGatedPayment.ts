@@ -27,8 +27,10 @@
 
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
-  FUND_NOTE_ID,
-  authorizeAction,
+  authorizeClaim,
+  authorizeDirect,
+  authorizeFund,
+  authorizeRefund,
   buildClaimActions,
   buildDirectActions,
   buildFundActions,
@@ -36,8 +38,6 @@ import {
   decodeRefusal,
   decodeRefusalFromError,
   preflight as runPreflight,
-  randomNonce,
-  signAction,
   toBigInt,
   toFelt,
   type Credential,
@@ -45,15 +45,16 @@ import {
   type FeltLike,
   type Preflight,
   type Refusal,
+  type Settlement,
   type Strk20Action,
 } from "@cordon/sdk";
 
 import { useCordonContext } from "../context/CordonProvider.js";
 import {
+  localError,
   readEpochSpend,
   readIssuerActive,
   readIssuerPublicKey,
-  readNonceUsed,
   readPolicy,
   readRevoked,
   readSettlement,
@@ -103,6 +104,8 @@ export interface PaymentBlocker {
     | "NO_RECIPIENT"
     | "NO_NOTE_ID"
     | "NO_SETTLEMENT_ID"
+    | "NO_EXPIRY"
+    | "NO_GATE_CONTEXT"
     | "NO_REGISTRIES";
   message: string;
 }
@@ -130,9 +133,18 @@ export interface UseGatedPaymentOptions {
    * said plainly rather than signing a value it made up.
    */
   noteId?: FeltLike | (() => FeltLike | null | Promise<FeltLike | null>) | null;
-  /** Names the escrow. Required for `fund`, `claim` and `refund`. */
+  /**
+   * Names the escrow. Required for `claim` and `refund`.
+   *
+   * Optional on `fund`, and best left alone: the SDK generates a random one, which matters because
+   * a settlement id is single-use forever and is the only handle in the event log. A predictable
+   * one can be burned ahead of you by a stranger, and ties the funding to the claim to whatever
+   * business record it came from. An invoice number is refused outright.
+   */
   settlementId?: FeltLike | null;
-  /** The policy a claimant will have to satisfy. Required for `fund`. */
+  /** The pseudonym allowed to claim the escrow. Required for `fund`. */
+  payeeSubjectKey?: FeltLike | null;
+  /** The policy that payee will have to satisfy. Required for `fund`. */
   payeeClaimPolicyId?: FeltLike | null;
   /** Unix seconds after which only a refund is possible. Required for `fund`. */
   expiresAt?: FeltLike | null;
@@ -205,7 +217,7 @@ async function resolveNoteId(
 }
 
 export function useGatedPayment(options: UseGatedPaymentOptions = {}): UseGatedPayment {
-  const { config, provider, connection, capability, registries, recordRefusal } =
+  const { config, provider, connection, capability, registries, gateContext, recordRefusal } =
     useCordonContext();
 
   const leg = options.leg ?? "direct";
@@ -234,6 +246,9 @@ export function useGatedPayment(options: UseGatedPaymentOptions = {}): UseGatedP
     if (!connection) add("NO_WALLET", "Connect a wallet first.");
     else if (capability && capability.status !== "supported") {
       add("NO_STRK20_SUPPORT", capability.reason);
+    }
+    if (gateContext && !gateContext.available) {
+      add("NO_GATE_CONTEXT", gateContext.error.message);
     }
     if (registries && !registries.available) {
       add(
@@ -264,11 +279,25 @@ export function useGatedPayment(options: UseGatedPaymentOptions = {}): UseGatedP
     if ((leg === "claim" || leg === "refund") && !options.recipient) {
       add("NO_RECIPIENT", "Name the address the note is credited to.");
     }
-    if (leg !== "direct" && leg !== "fund" && !options.settlementId) {
+    if ((leg === "claim" || leg === "refund") && !options.settlementId) {
       add("NO_SETTLEMENT_ID", "Name the settlement.");
     }
-    if (leg === "fund" && !options.settlementId) {
-      add("NO_SETTLEMENT_ID", "Choose a settlement id. It is single-use, forever.");
+    if (leg === "fund") {
+      // The settlement id is deliberately not required: the SDK generates a random one, and a
+      // guessable id is a real hazard rather than a convenience.
+      if (!options.payeeSubjectKey) {
+        add(
+          "NO_PAYEE",
+          "Name the payee's pseudonym. A settlement with no named payee could be claimed by " +
+            "anyone holding a credential the claim policy accepts.",
+        );
+      }
+      if (!options.payeeClaimPolicyId) {
+        add("NO_POLICY_ID", "Choose the policy the payee will have to satisfy to claim.");
+      }
+      if (!options.expiresAt) {
+        add("NO_EXPIRY", "Set when the claim window closes and the refund window opens.");
+      }
     }
     if (leg !== "fund" && (options.noteId === null || options.noteId === undefined)) {
       add(
@@ -279,7 +308,7 @@ export function useGatedPayment(options: UseGatedPaymentOptions = {}): UseGatedP
       );
     }
     return found;
-  }, [connection, capability, registries, leg, options]);
+  }, [connection, capability, registries, gateContext, leg, options]);
 
   const reset = useCallback((): void => {
     setStatus("idle");
@@ -335,51 +364,53 @@ export function useGatedPayment(options: UseGatedPaymentOptions = {}): UseGatedP
       setResult(null);
 
       try {
-        const nonce = current.nonce !== null && current.nonce !== undefined
-          ? toFelt(current.nonce)
-          : randomNonce();
+        // Every signature is bound to the chain id, the gate and the pool the gate was built
+        // against. All three are read from the chain rather than taken from configuration, so a
+        // mismatch stops here instead of becoming a revert the user paid for.
+        if (!gateContext) {
+          fail(localError("The gate's context is still being read. Try again in a moment."));
+          return;
+        }
+        if (!gateContext.available) {
+          fail(gateContext.error);
+          return;
+        }
+        const context = gateContext.value;
+
         const gate = config.gateAddress;
         const registryAddresses = registries?.available ? registries.value : null;
+        const nonce = current.nonce ?? undefined;
+        const subjectKey = current.subjectPrivateKey as FeltLike;
 
-        // The amount the subject signs over has to be the amount the gate will see. On the later
-        // legs that is the stored settlement's amount, not anything the caller passes.
-        let amount: bigint;
-        let policyId: Felt;
-        let noteId: Felt;
-
-        if (currentLeg === "direct" || currentLeg === "fund") {
-          amount = current.amount ?? 0n;
-          policyId = toFelt(current.policyId ?? 0);
-          noteId = currentLeg === "fund" ? FUND_NOTE_ID : await resolveNoteId(current.noteId);
-        } else {
-          const settlement = await readSettlement(
-            provider,
-            gate,
-            current.settlementId as FeltLike,
-          );
-          if (!settlement.available) {
-            fail(settlement.error);
+        // On the later legs the amount and the policy come from the stored settlement, which is
+        // where the gate takes them from too. Nothing the caller passes can override them.
+        let settlement: Settlement | null = null;
+        if (currentLeg === "claim" || currentLeg === "refund") {
+          const reading = await readSettlement(provider, gate, current.settlementId as FeltLike);
+          if (!reading.available) {
+            fail(reading.error);
             return;
           }
-          amount = settlement.value.amount;
-          policyId =
-            currentLeg === "claim"
-              ? settlement.value.payeeClaimPolicyId
-              : settlement.value.payerPolicyId;
-          noteId = await resolveNoteId(current.noteId);
+          settlement = reading.value;
         }
+
+        const amount = settlement ? settlement.amount : (current.amount ?? 0n);
+        const policyId = settlement
+          ? currentLeg === "claim"
+            ? settlement.payeeClaimPolicyId
+            : settlement.payerPolicyId
+          : toFelt(current.policyId ?? 0);
 
         // Pre-flight. Every check that cannot be run is reported as skipped rather than assumed to
         // pass, so a green light here means "nothing we could check would refuse this", never
         // "this will definitely settle".
-        let flight: Preflight | null = null;
-        if (current.credential && registryAddresses && (currentLeg === "direct" || currentLeg === "fund")) {
-          flight = await buildPreflight({
+        if (current.credential && registryAddresses) {
+          const flight = await buildPreflight({
             credential: current.credential,
             policyId,
             amount,
+            token: currentToken,
             gate,
-            nonce,
             provider,
             registries: registryAddresses,
           });
@@ -390,62 +421,75 @@ export function useGatedPayment(options: UseGatedPaymentOptions = {}): UseGatedP
           }
         }
 
-        // Sign the authorisation. This is the subject's own STARK-curve key, not the wallet's:
-        // the pseudonym is what velocity and replay protection are keyed by, and binding it to a
-        // wallet address would undo the privacy the pool provides.
-        const signingParams = {
-          chainId: config.chainId,
-          gate,
-          policyId,
-          noteId,
-          token: currentToken,
-          amount,
-          nonce,
-        };
-        const subjectKey = current.subjectPrivateKey as FeltLike;
-
+        // Sign, then build from the signed result. The SDK's builders read the amount and the
+        // terms back off the authorisation, so what was signed and what is sent are the same
+        // values by construction — there is nowhere for a second, different number to come from.
+        //
+        // The key is the subject's own STARK-curve key, never the wallet's: the pseudonym is what
+        // velocity and replay protection are keyed by, and binding it to an address would undo the
+        // privacy the pool provides.
         let built: Strk20Action[];
         if (currentLeg === "direct") {
           built = buildDirectActions({
-            gate,
-            token: currentToken,
-            amount,
-            payee: current.payee as string,
-            payer: authorizeAction(
-              { ...signingParams, credential: current.credential as Credential },
+            authorization: authorizeDirect(
+              {
+                context,
+                token: currentToken,
+                policyId,
+                credential: current.credential as Credential,
+                amount,
+                noteId: await resolveNoteId(current.noteId),
+                ...(nonce !== undefined ? { nonce } : {}),
+              },
               subjectKey,
             ),
+            payee: current.payee as string,
           });
         } else if (currentLeg === "fund") {
           built = buildFundActions({
-            gate,
-            token: currentToken,
-            amount,
-            payer: authorizeAction(
-              { ...signingParams, credential: current.credential as Credential },
+            authorization: authorizeFund(
+              {
+                context,
+                token: currentToken,
+                policyId,
+                credential: current.credential as Credential,
+                amount,
+                payeeSubjectKey: current.payeeSubjectKey as FeltLike,
+                payeeClaimPolicyId: current.payeeClaimPolicyId as FeltLike,
+                expiresAt: current.expiresAt as FeltLike,
+                ...(current.settlementId ? { settlementId: current.settlementId } : {}),
+                ...(nonce !== undefined ? { nonce } : {}),
+              },
               subjectKey,
             ),
-            settlementId: current.settlementId as FeltLike,
-            payeeClaimPolicyId: current.payeeClaimPolicyId as FeltLike,
-            expiresAt: current.expiresAt as FeltLike,
           });
         } else if (currentLeg === "claim") {
           built = buildClaimActions({
-            gate,
-            token: currentToken,
-            settlementId: current.settlementId as FeltLike,
-            credential: current.credential as Credential,
-            signature: signAction(signingParams, subjectKey),
-            nonce,
+            authorization: authorizeClaim(
+              {
+                context,
+                settlement: settlement as Settlement,
+                settlementId: current.settlementId as FeltLike,
+                credential: current.credential as Credential,
+                noteId: await resolveNoteId(current.noteId),
+                ...(nonce !== undefined ? { nonce } : {}),
+              },
+              subjectKey,
+            ),
             recipient: current.recipient as string,
           });
         } else {
           built = buildRefundActions({
-            gate,
-            token: currentToken,
-            settlementId: current.settlementId as FeltLike,
-            signature: signAction(signingParams, subjectKey),
-            nonce,
+            authorization: authorizeRefund(
+              {
+                context,
+                settlement: settlement as Settlement,
+                settlementId: current.settlementId as FeltLike,
+                noteId: await resolveNoteId(current.noteId),
+                ...(nonce !== undefined ? { nonce } : {}),
+              },
+              subjectKey,
+            ),
             recipient: current.recipient as string,
           });
         }
@@ -506,7 +550,7 @@ export function useGatedPayment(options: UseGatedPaymentOptions = {}): UseGatedP
         });
       }
     },
-    [connection, config, provider, registries, fail, refuse],
+    [connection, config, provider, registries, gateContext, fail, refuse],
   );
 
   return {
@@ -532,12 +576,12 @@ async function buildPreflight(params: {
   credential: Credential;
   policyId: Felt;
   amount: bigint;
+  token: string;
   gate: string;
-  nonce: Felt;
   provider: Parameters<typeof readPolicy>[0];
   registries: { issuerRegistry: string; revocationRegistry: string; policyRegistry: string };
 }): Promise<Preflight> {
-  const { credential, policyId, amount, gate, nonce, provider, registries } = params;
+  const { credential, policyId, amount, token, gate, provider, registries } = params;
 
   const policyReading = await readPolicy(provider, registries.policyRegistry, policyId);
   if (!policyReading.available) {
@@ -554,7 +598,7 @@ async function buildPreflight(params: {
   }
   const policy = policyReading.value;
 
-  const [issuerKey, issuerActive, revoked, nonceUsed] = await Promise.all([
+  const [issuerKey, issuerActive, revoked] = await Promise.all([
     readIssuerPublicKey(provider, registries.issuerRegistry, credential.issuerId),
     readIssuerActive(provider, registries.issuerRegistry, credential.issuerId),
     readRevoked(
@@ -563,7 +607,6 @@ async function buildPreflight(params: {
       credential.issuerId,
       credential.credentialId,
     ),
-    readNonceUsed(provider, gate, credential.subjectPublicKey, nonce),
   ]);
 
   let epochSpend: bigint | undefined;
@@ -579,16 +622,26 @@ async function buildPreflight(params: {
     if (spend.available) epochSpend = spend.value;
   }
 
+  // Two of the gate's checks are deliberately not pre-flighted.
+  //
+  // The **nonce**, because each attempt signs a fresh 128-bit random one: `CORDON_NONCE_USED` is
+  // unreachable by construction, and reading a nonce that does not exist yet answers nothing.
+  //
+  // The **unaccounted balance**, because the gate measures it *after* the pool has transferred, and
+  // a pre-flight runs before. It reads zero right up until the moment it matters, so feeding it in
+  // would predict `CORDON_UNDERFUNDED` for every payment that was going to succeed. The withdraw
+  // action funds the gate with exactly the signed amount, so the real check is satisfied by
+  // construction. `readUnaccountedBalance` is exported for callers inspecting a gate directly.
   return runPreflight({
     policy,
     credential,
     amount,
+    token,
     ...(issuerKey.available ? { issuerPublicKey: issuerKey.value } : {}),
     ...(issuerActive.available ? { issuerActive: issuerActive.value } : {}),
     ...(revoked.available
       ? { revokedCredentialIds: revoked.value ? [credential.credentialId] : [] }
       : {}),
-    ...(nonceUsed.available ? { nonceUsed: nonceUsed.value } : {}),
     ...(epochSpend !== undefined ? { epochSpend } : {}),
   });
 }
