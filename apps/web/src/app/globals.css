@@ -1,9 +1,1463 @@
 @import "tailwindcss";
+@import "@cordon/react/styles.css";
 
-:root {
-  color-scheme: dark;
+/* ═══════════════════════════════════════════════════════════════════════════
+   PUBLIC RECORD — the design system, as Tailwind v4 theme tokens.
+
+   Cordon's output is a public record of decisions, so the product is set as a
+   printed document rather than a dashboard: paper white, one ink, structure
+   from hairline rules and alignment. There are no cards, no shadows, and the
+   border radius is 0 everywhere without exception.
+
+   Two devices are grafted on and no more:
+     · the cordon line   — every limit drawn as one hard boundary rule with 45°
+                           hatching over the prohibited region
+     · the signal panel  — the one loud thing, spent only on a refusal
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@theme {
+  /* ── colour · nine tokens, no gradients, no shadows ───────────────────── */
+  --color-paper: #f7f5f0;
+  --color-paper-2: #efece4;
+  --color-ink: #14140f;
+  --color-ink-2: #55524a;
+  --color-ink-3: #8b8779; /* metadata only */
+  --color-rule: #d6d2c6; /* hairlines */
+  --color-red: #c8102e; /* refusal — nothing else, ever */
+  --color-green: #00764a; /* a passed check only */
+  --color-hazard: #f5c400; /* the cordon line's hatching only */
+
+  /* ── type · three faces, all resolved locally ─────────────────────────── */
+  --font-display: "Bahnschrift", "Franklin Gothic Medium", "Helvetica Neue", Helvetica, Arial,
+    sans-serif;
+  --font-editorial: "Constantia", "Cambria", Georgia, "Times New Roman", serif;
+  --font-mono: "Cascadia Mono", "Cascadia Code", Consolas, "Lucida Sans Typewriter", "Courier New",
+    monospace;
+
+  /* ── scale · deliberately extreme, not even ───────────────────────────── */
+  --text-agate: 10px;
+  --text-agate--line-height: 11px;
+  --text-fine: 12px;
+  --text-fine--line-height: 22px;
+  --text-body: 14px;
+  --text-body--line-height: 22px;
+  --text-lede: 16px;
+  --text-lede--line-height: 22px;
+  --text-sub: 20px;
+  --text-sub--line-height: 22px;
+  --text-head: 28px;
+  --text-head--line-height: 33px;
+  --text-display: 44px;
+  --text-display--line-height: 44px;
+  --text-mega: 96px;
+  --text-mega--line-height: 88px;
+  --text-hero: 216px;
+  --text-hero--line-height: 198px;
+
+  --tracking-tight: -0.03em;
+  --tracking-flat: 0.02em;
+  --tracking-label: 0.22em;
+  --tracking-mega: 0.3em;
+
+  /* ── rhythm · 4px base, 11px baseline unit ────────────────────────────── */
+  --spacing-hair: 4px;
+  --spacing-tick: 8px;
+  --spacing-bl: 11px;
+  --spacing-gut: 22px;
+  --spacing-pad: 44px;
+  --spacing-run: 88px;
+
+  --container-sheet: 1440px;
+
+  /* ── motion · two speeds and no more ──────────────────────────────────── */
+  --ease-record: cubic-bezier(0, 0, 0.2, 1); /* editorial, 200ms, barely noticed */
+  --ease-drive: cubic-bezier(0.2, 0.7, 0.3, 1); /* the amount bar, 900ms, stops dead */
+
+  --animate-draw: draw 200ms var(--ease-record) both;
+  --animate-rise: rise 200ms var(--ease-record) both;
 }
 
-body {
-  @apply bg-neutral-950 text-neutral-100 antialiased;
+@keyframes draw {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(11px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* The amount bar drives to the cordon line and stops dead. No bounce, no
+   overshoot settle: a limit is not springy. */
+@keyframes drive {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@layer base {
+  :root {
+    color-scheme: light;
+
+    /* The 45° hatching that marks a prohibited region. Hazard yellow is spent
+       here and nowhere else in the product. */
+    --hatch: repeating-linear-gradient(
+      45deg,
+      color-mix(in srgb, var(--color-hazard) 70%, transparent) 0 4px,
+      transparent 4px 5px,
+      color-mix(in srgb, var(--color-hazard) 70%, transparent) 5px 6px,
+      transparent 6px 10px
+    );
+    /* The same device in ink, for a boundary that is a scope rather than a ban. */
+    --hatch-ink: repeating-linear-gradient(
+      45deg,
+      color-mix(in srgb, var(--color-ink) 14%, transparent) 0 4px,
+      transparent 4px 5px,
+      color-mix(in srgb, var(--color-ink) 14%, transparent) 5px 6px,
+      transparent 6px 10px
+    );
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-display);
+    font-size: var(--text-body);
+    line-height: 22px;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+    /* Tabular figures are mandatory: every number in this product sits in a
+       column, a meter or a ledger, and none of them may shift width. */
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+  }
+
+  /* Radius is 0 everywhere, without exception — including inside the package's
+     own components, which are dressed through their custom properties below. */
+  * {
+    border-radius: 0;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-ink);
+    outline-offset: 2px;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+    border-bottom: 1px solid var(--color-rule);
+  }
+
+  a:hover {
+    border-bottom-color: var(--color-ink);
+    background: var(--color-paper-2);
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-weight: 500;
+  }
+
+  b,
+  strong {
+    font-weight: 500;
+  }
+
+  ::selection {
+    background: var(--color-ink);
+    color: var(--color-paper);
+  }
+}
+
+@layer components {
+  /* ═══ page furniture ══════════════════════════════════════════════════ */
+
+  .sheet {
+    width: 100%;
+    max-width: var(--container-sheet);
+    margin: 0 auto;
+    padding-inline: var(--spacing-gut);
+  }
+
+  @media (min-width: 900px) {
+    .sheet {
+      padding-inline: var(--spacing-pad);
+    }
+  }
+
+  /* The four-column modular grid with asymmetric spans. It collapses to one
+     column below 900px so nothing has to scroll sideways. */
+  .grid4 {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--spacing-gut);
+  }
+
+  @media (min-width: 900px) {
+    .grid4 {
+      grid-template-columns: 2.6fr 1fr 1fr 1fr;
+    }
+
+    .span2 {
+      grid-column: span 2;
+    }
+
+    .span3 {
+      grid-column: span 3;
+    }
+
+    .span4 {
+      grid-column: span 4;
+    }
+  }
+
+  .label {
+    font-size: var(--text-agate);
+    line-height: 11px;
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    color: var(--color-ink-3);
+  }
+
+  /* A hairline that draws itself left to right, once, on arrival. */
+  .hairline {
+    height: 1px;
+    background: var(--color-ink);
+    transform-origin: left center;
+    animation: var(--animate-draw);
+  }
+
+  .hairline--thin {
+    background: var(--color-rule);
+  }
+
+  .hairline--heavy {
+    height: 3px;
+  }
+
+  .hairline--signal {
+    height: 3px;
+    background: var(--color-red);
+  }
+
+  /* ═══ field rows — data set as typography, never as boxes ═════════════ */
+
+  .rows {
+    border-top: 1px solid var(--color-ink);
+  }
+
+  .rw {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0 var(--spacing-bl);
+    align-items: baseline;
+    border-bottom: 1px solid var(--color-rule);
+    padding: var(--spacing-hair) 0;
+  }
+
+  @media (min-width: 560px) {
+    .rw {
+      grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+    }
+  }
+
+  .rw > dt,
+  .rw > .k {
+    font-size: var(--text-agate);
+    line-height: 16px;
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    color: var(--color-ink-3);
+  }
+
+  .rw > dd,
+  .rw > .v {
+    font-family: var(--font-mono);
+    font-size: var(--text-fine);
+    line-height: 18px;
+    letter-spacing: 0;
+    overflow-wrap: anywhere;
+  }
+
+  @media (min-width: 560px) {
+    .rw > dd,
+    .rw > .v {
+      text-align: right;
+    }
+  }
+
+  .rw--strong {
+    border-bottom-color: var(--color-ink);
+  }
+
+  .v--big {
+    font-family: var(--font-display);
+    font-size: var(--text-sub);
+    line-height: 22px;
+    letter-spacing: var(--tracking-tight);
+  }
+
+  .v--pass {
+    color: var(--color-green);
+  }
+
+  .v--refuse {
+    color: var(--color-red);
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     THE CORDON LINE — the product's signature graphic.
+
+     A limit drawn as one hard boundary rule, with 45° hatching over the
+     prohibited region and the amount visibly crossing it. Four fixed lanes in
+     the track so no two labels can ever collide:
+
+       lane 1  the cap label, above the rule
+       lane 2  the bars
+       lane 3  the zone words, at the track top
+       lane 4  the amount endcap, at the track bottom
+
+     Parametric on --cap (where the line stands) and --amt (where the bar ends),
+     both percentages of the track.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  .cordonline {
+    --cap: 71.43%;
+    --amt: 92.86%;
+    --track-h: 55px;
+    --bar-top: 21px;
+    --bar-h: 17px;
+    padding-top: var(--spacing-gut);
+    margin: 0;
+  }
+
+  .cordonline__head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: var(--spacing-gut);
+    flex-wrap: wrap;
+    font-size: var(--text-agate);
+    line-height: 14px;
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    color: var(--color-ink-3);
+    padding-bottom: var(--spacing-bl);
+  }
+
+  .cordonline__head b {
+    color: var(--color-ink);
+  }
+
+  .cordonline__head .num {
+    font-family: var(--font-mono);
+    font-size: var(--text-fine);
+    letter-spacing: var(--tracking-flat);
+    text-transform: none;
+    color: var(--color-ink-2);
+  }
+
+  .cordonline__track {
+    position: relative;
+    height: var(--track-h);
+    background: var(--color-paper-2);
+    border-top: 1px solid var(--color-rule);
+    border-bottom: 1px solid var(--color-ink);
+  }
+
+  /* lane 3 · the zone words */
+  .cordonline__zone {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    font-size: var(--text-agate);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+  }
+
+  .cordonline__zone > span {
+    position: absolute;
+    top: 3px;
+    white-space: nowrap;
+  }
+
+  .cordonline__zone--permit {
+    left: 0;
+    width: var(--cap);
+    color: var(--color-ink-3);
+  }
+
+  .cordonline__zone--permit > span {
+    left: 6px;
+  }
+
+  /* the prohibited region beyond the line */
+  .cordonline__zone--forbid {
+    left: var(--cap);
+    right: 0;
+    background: var(--hatch);
+    color: var(--color-red);
+    transform-origin: left center;
+    animation: draw 200ms var(--ease-record) 120ms both;
+  }
+
+  .cordonline__zone--forbid > span {
+    right: 6px;
+  }
+
+  .cordonline--scoped .cordonline__zone--forbid {
+    background: var(--hatch-ink);
+    color: var(--color-ink-3);
+  }
+
+  /* lane 2 · the bars */
+  .cordonline__bar,
+  .cordonline__over,
+  .cordonline__pending {
+    position: absolute;
+    top: var(--bar-top);
+    height: var(--bar-h);
+    transform-origin: left center;
+  }
+
+  .cordonline__bar {
+    left: 0;
+    width: var(--amt);
+    background: var(--color-ink);
+    z-index: 3;
+  }
+
+  /* value already spent inside the epoch, banded so it reads as an accumulation
+     of separate transfers rather than one */
+  .cordonline__bar--banded {
+    background: repeating-linear-gradient(
+      90deg,
+      var(--color-ink) 0 12px,
+      var(--color-paper-2) 12px 13px
+    );
+  }
+
+  /* the part that crosses the line — the only red on a track */
+  .cordonline__over {
+    left: var(--cap);
+    width: calc(var(--amt) - var(--cap));
+    background: var(--color-red);
+    z-index: 4;
+  }
+
+  /* an addition drawn but honestly marked as not yet assessed */
+  .cordonline__pending {
+    left: var(--from);
+    width: calc(var(--to) - var(--from));
+    z-index: 2;
+    background: repeating-linear-gradient(90deg, var(--color-ink) 0 2px, transparent 2px 6px);
+  }
+
+  .cordonline--driving .cordonline__bar,
+  .cordonline--driving .cordonline__over,
+  .cordonline--driving .cordonline__pending {
+    animation: drive 900ms var(--ease-drive) both;
+  }
+
+  /* THE CORDON — 2px black boundary rule with a 3px red cap marker */
+  .cordonline__line {
+    position: absolute;
+    left: var(--cap);
+    top: -11px;
+    bottom: -11px;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--color-ink);
+    z-index: 6;
+  }
+
+  .cordonline__line::before {
+    content: "";
+    position: absolute;
+    left: -1px;
+    right: -1px;
+    top: 0;
+    height: 3px;
+    background: var(--color-red);
+  }
+
+  .cordonline--scoped .cordonline__line {
+    background: repeating-linear-gradient(180deg, var(--color-ink) 0 5px, transparent 5px 10px);
+  }
+
+  .cordonline--scoped .cordonline__line::before {
+    display: none;
+  }
+
+  /* lane 1 · the cap label, above the rule */
+  .cordonline__cap {
+    position: absolute;
+    left: 10px;
+    top: -1px;
+    white-space: nowrap;
+    font-family: var(--font-display);
+    font-size: var(--text-agate);
+    line-height: 14px;
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    color: var(--color-ink);
+    background: var(--color-paper);
+    padding: 1px 7px 2px;
+    border-left: 3px solid var(--color-red);
+  }
+
+  .cordonline__line--flip .cordonline__cap {
+    left: auto;
+    right: 10px;
+    border-left: 0;
+    border-right: 3px solid var(--color-red);
+  }
+
+  .cordonline--scoped .cordonline__cap {
+    border-color: var(--color-ink);
+  }
+
+  /* lane 4 · the amount endcap */
+  .cordonline__endcap {
+    position: absolute;
+    left: var(--amt);
+    bottom: 3px;
+    transform: translateX(-100%);
+    padding-right: 9px;
+    white-space: nowrap;
+    z-index: 7;
+    line-height: 14px;
+    font-family: var(--font-mono);
+    font-size: var(--text-fine);
+    color: var(--color-red);
+  }
+
+  .cordonline__endcap--within {
+    color: var(--color-ink-2);
+  }
+
+  /* An amount that could not be read: a striped, valueless track. Never a full
+     one — "you have your whole limit left" is the most dangerous thing this
+     component could say wrongly. */
+  .cordonline__unreadable {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: var(--bar-top);
+    height: var(--bar-h);
+    z-index: 3;
+    background: repeating-linear-gradient(
+      -45deg,
+      var(--color-rule) 0 6px,
+      transparent 6px 12px
+    );
+  }
+
+  /* Below a quarter of the track there is no room to hang the endcap on the
+     left of the bar's end, so it goes to the right of it instead. */
+  .cordonline__endcap--right {
+    transform: none;
+    padding-right: 0;
+    padding-left: 9px;
+  }
+
+  .cordonline__scale {
+    display: flex;
+    justify-content: space-between;
+    padding-top: var(--spacing-hair);
+    font-family: var(--font-mono);
+    font-size: var(--text-agate);
+    line-height: 14px;
+    color: var(--color-ink-3);
+  }
+
+  .cordonline__foot {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--spacing-gut);
+    flex-wrap: wrap;
+    padding-top: 6px;
+    margin-top: var(--spacing-hair);
+    font-size: var(--text-fine);
+    line-height: 18px;
+    color: var(--color-ink-2);
+    border-top: 1px solid var(--color-rule);
+  }
+
+  .cordonline__verdict {
+    font-family: var(--font-display);
+    font-size: var(--text-agate);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .cordonline__verdict--refuse {
+    color: var(--color-red);
+  }
+
+  .cordonline__verdict--pass {
+    color: var(--color-green);
+  }
+
+  .cordonline__verdict--idle {
+    color: var(--color-ink-3);
+  }
+
+  /* the size used where the cordon line is the screen's main figure */
+  .cordonline--hero {
+    --track-h: 88px;
+    --bar-top: 28px;
+    --bar-h: 38px;
+  }
+
+  .cordonline--hero .cordonline__cap {
+    font-size: var(--text-fine);
+    padding: 2px 9px 3px;
+  }
+
+  .cordonline--hero .cordonline__endcap {
+    font-size: var(--text-body);
+    bottom: 5px;
+    line-height: 18px;
+  }
+
+  /* the compact size used inside a table cell */
+  .cordonline--mini {
+    --track-h: 22px;
+    --bar-top: 6px;
+    --bar-h: 10px;
+    padding-top: 0;
+  }
+
+  .cordonline--mini .cordonline__line {
+    top: -4px;
+    bottom: -4px;
+  }
+
+  .cordonline--mini .cordonline__cap,
+  .cordonline--mini .cordonline__endcap,
+  .cordonline--mini .cordonline__zone > span {
+    display: none;
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     THE SIGNAL-WORD PANEL — the one loud thing in a quiet product.
+
+     It arrives as a hard cut with no easing, because a revert is not a
+     transition. A sign has a border; nothing else on these pages does.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  .signal {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    border: 2px solid var(--color-ink);
+    background: var(--color-paper);
+  }
+
+  @media (min-width: 640px) {
+    .signal {
+      grid-template-columns: 110px minmax(0, 1fr);
+    }
+  }
+
+  .signal__pictogram {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--spacing-bl) 0;
+    border-bottom: 2px solid var(--color-ink);
+    background: var(--color-paper-2);
+  }
+
+  @media (min-width: 640px) {
+    .signal__pictogram {
+      border-bottom: 0;
+      border-right: 2px solid var(--color-ink);
+    }
+  }
+
+  .signal__body {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .signal__word {
+    background: var(--color-red);
+    color: #ffffff;
+    padding: var(--spacing-tick) var(--spacing-gut) var(--spacing-bl);
+    display: flex;
+    align-items: baseline;
+    gap: 6px var(--spacing-gut);
+    flex-wrap: wrap;
+  }
+
+  .signal__word strong {
+    font-family: var(--font-display);
+    font-size: var(--text-display);
+    line-height: 44px;
+    letter-spacing: var(--tracking-mega);
+    text-transform: uppercase;
+  }
+
+  .signal__word code {
+    font-family: var(--font-mono);
+    font-size: var(--text-body);
+    letter-spacing: var(--tracking-flat);
+  }
+
+  .signal__step {
+    margin-left: auto;
+    font-size: var(--text-agate);
+    line-height: 14px;
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    text-align: right;
+  }
+
+  .signal__message {
+    padding: var(--spacing-bl) var(--spacing-gut) var(--spacing-gut);
+  }
+
+  .signal__message p {
+    font-family: var(--font-editorial);
+    font-size: var(--text-lede);
+    line-height: 24px;
+    max-width: 74ch;
+  }
+
+  .signal__verbatim {
+    margin-top: var(--spacing-bl);
+    padding-top: var(--spacing-tick);
+    border-top: 1px solid var(--color-rule);
+    font-family: var(--font-mono);
+    font-size: var(--text-fine);
+    line-height: 18px;
+    color: var(--color-ink-2);
+    word-break: break-all;
+  }
+
+  .signal__verbatim i {
+    font-style: normal;
+    color: var(--color-red);
+  }
+
+  .signal__meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-hair) var(--spacing-gut);
+    margin-top: var(--spacing-tick);
+    font-size: var(--text-agate);
+    line-height: 14px;
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    color: var(--color-ink-3);
+  }
+
+  .signal__meta b {
+    color: var(--color-ink);
+  }
+
+  /* A printed prohibition rather than an alarm: used where nothing was
+     refused but something is deliberately not being handed over. */
+  .signal--ink .signal__word {
+    background: var(--color-ink);
+  }
+
+  /* ═══ the twelve checks ═══════════════════════════════════════════════ */
+
+  .checks {
+    border-top: 1px solid var(--color-ink);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .check {
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr) minmax(0, auto) 72px;
+    gap: var(--spacing-tick);
+    align-items: baseline;
+    border-bottom: 1px solid var(--color-rule);
+    padding: 3px 0;
+    font-size: var(--text-fine);
+    line-height: 18px;
+    color: var(--color-rule);
+  }
+
+  /* Discrete, mechanical verification: each row lands whole at 240ms. There is
+     no partial state and nothing tweens, because a check either ran or it did
+     not. */
+  .check--ran {
+    color: var(--color-ink);
+  }
+
+  .check--passed .check__result {
+    color: var(--color-green);
+  }
+
+  .check--failed {
+    color: var(--color-red);
+    border-bottom: 2px solid var(--color-red);
+    background: color-mix(in srgb, var(--color-red) 7%, transparent);
+  }
+
+  .check--failed .check__result {
+    color: var(--color-red);
+  }
+
+  .check__index {
+    font-family: var(--font-mono);
+    font-size: var(--text-agate);
+    color: inherit;
+    opacity: 0.7;
+  }
+
+  .check__name {
+    font-family: var(--font-mono);
+    letter-spacing: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .check__value {
+    font-family: var(--font-mono);
+    font-size: var(--text-agate);
+    text-align: right;
+    color: inherit;
+    opacity: 0.75;
+    white-space: nowrap;
+  }
+
+  .check__result {
+    font-family: var(--font-display);
+    font-size: var(--text-agate);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    text-align: right;
+  }
+
+  /* ═══ agate tables ════════════════════════════════════════════════════ */
+
+  /* A wide table scrolls inside its own container. The page body never does. */
+  .scroller {
+    overflow-x: auto;
+    max-width: 100%;
+  }
+
+  .agate {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  .agate th {
+    font-size: var(--text-agate);
+    line-height: 14px;
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    color: var(--color-ink-3);
+    text-align: left;
+    font-weight: 400;
+    padding: 0 0 var(--spacing-hair);
+    border-bottom: 1px solid var(--color-ink);
+    white-space: nowrap;
+  }
+
+  .agate td {
+    padding: 6px 0;
+    border-bottom: 1px solid var(--color-rule);
+    font-size: var(--text-fine);
+    line-height: 18px;
+    white-space: nowrap;
+    vertical-align: baseline;
+  }
+
+  .agate th:not(:last-child),
+  .agate td:not(:last-child) {
+    padding-right: var(--spacing-gut);
+  }
+
+  .agate .num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .agate .decision {
+    font-family: var(--font-display);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+  }
+
+  .agate .amount {
+    font-family: var(--font-display);
+    font-size: var(--text-body);
+    letter-spacing: var(--tracking-tight);
+  }
+
+  .agate .code {
+    font-family: var(--font-mono);
+    font-size: var(--text-fine);
+    letter-spacing: 0;
+  }
+
+  .agate .pseudonym {
+    font-family: var(--font-mono);
+    font-size: var(--text-fine);
+    color: var(--color-ink-3);
+  }
+
+  .agate .wrap {
+    white-space: normal;
+    min-width: 28ch;
+  }
+
+  .agate tr[data-verdict="refused"] .decision,
+  .agate tr[data-verdict="refused"] .code,
+  .agate tr[data-verdict="refused"] .amount {
+    color: var(--color-red);
+  }
+
+  .agate tr[data-verdict="pass"] .decision {
+    color: var(--color-green);
+  }
+
+  /* A field that was never in the transcript, marked as such rather than
+     redacted after the fact. */
+  .withheld {
+    background: var(--hatch-ink);
+  }
+
+  .withheld td {
+    color: var(--color-ink-3);
+    text-decoration: line-through;
+    text-decoration-color: var(--color-rule);
+  }
+
+  .withheld td:last-child {
+    text-decoration: none;
+    color: var(--color-ink);
+  }
+
+  /* ═══ the hero figure ═════════════════════════════════════════════════ */
+
+  .figure__number {
+    font-family: var(--font-display);
+    font-size: var(--text-mega);
+    line-height: 88px;
+    letter-spacing: -0.05em;
+    margin-left: -0.04em;
+  }
+
+  @media (min-width: 900px) {
+    .figure__number--hero {
+      font-size: var(--text-hero);
+      line-height: 198px;
+    }
+  }
+
+  .figure__word {
+    font-family: var(--font-display);
+    font-size: var(--text-head);
+    line-height: 33px;
+    letter-spacing: var(--tracking-mega);
+    text-transform: uppercase;
+  }
+
+  .stat {
+    margin: 0;
+  }
+
+  .stat__row {
+    border-top: 1px solid var(--color-rule);
+  }
+
+  .stat__row:first-child {
+    border-top: 1px solid var(--color-ink);
+  }
+
+  .stat dt {
+    font-size: var(--text-agate);
+    line-height: 16px;
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    color: var(--color-ink-3);
+    padding-top: var(--spacing-hair);
+  }
+
+  .stat dd {
+    font-family: var(--font-display);
+    font-size: var(--text-head);
+    line-height: 33px;
+    letter-spacing: var(--tracking-tight);
+    padding-bottom: var(--spacing-hair);
+    margin: 0;
+  }
+
+  .stat dd small {
+    font-size: var(--text-fine);
+    letter-spacing: var(--tracking-flat);
+    color: var(--color-ink-3);
+  }
+
+  /* ═══ the epoch clock ═════════════════════════════════════════════════ */
+
+  .clock__track {
+    position: relative;
+    height: 26px;
+    border-bottom: 1px solid var(--color-ink);
+    background: var(--color-paper-2);
+  }
+
+  .clock__elapsed {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    background: repeating-linear-gradient(90deg, var(--color-rule) 0 1px, transparent 1px 5px);
+    transform-origin: left center;
+    animation: draw 200ms var(--ease-record) both;
+  }
+
+  .clock__now {
+    position: absolute;
+    top: -9px;
+    bottom: -9px;
+    width: 2px;
+    background: var(--color-ink);
+    z-index: 4;
+  }
+
+  .clock__now > b {
+    position: absolute;
+    left: 6px;
+    top: -3px;
+    white-space: nowrap;
+    font-size: var(--text-agate);
+    line-height: 14px;
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    background: var(--color-paper);
+    padding: 1px 5px;
+  }
+
+  .clock__mark {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--color-rule);
+    z-index: 2;
+  }
+
+  .clock__mark > b {
+    position: absolute;
+    left: 4px;
+    bottom: 3px;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: var(--text-agate);
+    font-weight: 400;
+    color: var(--color-ink-3);
+  }
+
+  /* ═══ the machine-readable zone · passport only ═══════════════════════ */
+
+  .mrz {
+    border-top: 2px solid var(--color-ink);
+    border-bottom: 2px solid var(--color-ink);
+    background: var(--color-paper-2);
+    padding: var(--spacing-bl) var(--spacing-gut);
+    overflow-x: auto;
+  }
+
+  .mrz__line {
+    font-family: var(--font-mono);
+    font-size: var(--text-lede);
+    line-height: 26px;
+    letter-spacing: 0.1em;
+    white-space: nowrap;
+  }
+
+  .mrz__line--refused {
+    color: var(--color-red);
+  }
+
+  /* ═══ impressed stamps · passport only ═══════════════════════════════ */
+
+  .stampfield {
+    position: relative;
+    border: 1px dashed var(--color-rule);
+  }
+
+  .stamp {
+    position: absolute;
+    border: 3px double currentColor;
+    padding: var(--spacing-tick) var(--spacing-bl) 6px;
+    text-align: center;
+    font-family: var(--font-editorial);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    mix-blend-mode: multiply;
+    pointer-events: none;
+  }
+
+  .stamp strong {
+    display: block;
+    font-size: var(--text-sub);
+    line-height: 22px;
+  }
+
+  .stamp i {
+    display: block;
+    font-style: normal;
+    font-size: 9px;
+    line-height: 13px;
+    margin-top: var(--spacing-hair);
+    letter-spacing: 0.12em;
+  }
+
+  /* The impression is never even — a stamp is pressed by a hand. */
+  .stamp::after {
+    content: "";
+    position: absolute;
+    inset: -3px;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      41deg,
+      transparent 0 2px,
+      color-mix(in srgb, var(--color-paper) 74%, transparent) 2px 3px
+    );
+  }
+
+  .stamp--admitted {
+    color: var(--color-ink);
+    transform: rotate(-7.5deg);
+  }
+
+  .stamp--revoked {
+    color: var(--color-red);
+    transform: rotate(-13deg);
+  }
+
+  /* ═══ merkle leaves · auditor only ═══════════════════════════════════ */
+
+  .leaves {
+    display: grid;
+    grid-template-columns: repeat(14, minmax(0, 1fr));
+    gap: 3px;
+  }
+
+  .leaf {
+    position: relative;
+    height: 33px;
+    background: var(--color-paper-2);
+    border: 1px solid var(--color-rule);
+  }
+
+  .leaf--matched::after {
+    content: "";
+    position: absolute;
+    inset: 2px;
+    background: var(--color-ink);
+  }
+
+  /* ═══ ruled stationery · the issuer console ══════════════════════════ */
+
+  .form {
+    border-top: 1px solid var(--color-ink);
+  }
+
+  .field {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0 var(--spacing-bl);
+    align-items: baseline;
+    border-bottom: 1px solid var(--color-rule);
+    padding: 6px 0;
+  }
+
+  @media (min-width: 560px) {
+    .field {
+      grid-template-columns: 160px minmax(0, 1fr);
+    }
+  }
+
+  .field > label {
+    font-size: var(--text-agate);
+    line-height: 16px;
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    color: var(--color-ink-3);
+  }
+
+  .field input,
+  .field select,
+  .field textarea {
+    font-family: var(--font-mono);
+    font-size: var(--text-fine);
+    color: var(--color-ink);
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid var(--color-rule);
+    width: 100%;
+    padding: 2px 0 3px;
+    letter-spacing: 0;
+  }
+
+  .field input:focus,
+  .field select:focus,
+  .field textarea:focus {
+    outline: 0;
+    border-bottom-color: var(--color-ink);
+    background: var(--color-paper-2);
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-tick);
+    font-family: var(--font-display);
+    font-size: var(--text-fine);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    padding: var(--spacing-tick) var(--spacing-bl);
+    border: 1px solid var(--color-ink);
+    background: transparent;
+    color: var(--color-ink);
+    cursor: pointer;
+  }
+
+  .btn:hover:not(:disabled) {
+    background: var(--color-ink);
+    color: var(--color-paper);
+  }
+
+  .btn:disabled {
+    color: var(--color-ink-3);
+    border-color: var(--color-rule);
+    cursor: not-allowed;
+  }
+
+  /* The one button that carries consequence. */
+  .btn--heavy {
+    background: var(--color-ink);
+    color: var(--color-paper);
+    border-top: 3px solid var(--color-red);
+    padding: var(--spacing-bl) var(--spacing-gut);
+    font-size: var(--text-body);
+    width: 100%;
+    justify-content: space-between;
+    text-align: left;
+  }
+
+  .btn--heavy:hover:not(:disabled) {
+    background: var(--color-red);
+    border-top-color: var(--color-ink);
+    color: #ffffff;
+  }
+
+  .order {
+    border-left: 3px solid var(--color-red);
+    padding-left: var(--spacing-bl);
+  }
+
+  /* ═══ prose ══════════════════════════════════════════════════════════ */
+
+  .lede {
+    font-family: var(--font-editorial);
+    font-size: var(--text-lede);
+    line-height: 24px;
+    color: var(--color-ink-2);
+    max-width: 62ch;
+  }
+
+  .note {
+    font-size: var(--text-fine);
+    line-height: 18px;
+    color: var(--color-ink-3);
+    max-width: 68ch;
+  }
+
+  .quote {
+    font-family: var(--font-display);
+    font-size: var(--text-head);
+    line-height: 33px;
+    letter-spacing: var(--tracking-tight);
+    max-width: 26ch;
+  }
+
+  .quote em {
+    font-style: normal;
+    color: var(--color-red);
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     @cordon/react, dressed.
+
+     Every rule in the package's stylesheet is wrapped in :where(), so its
+     specificity is zero and one plain class here outranks it. The tokens do
+     most of the work; these few rules undo the shapes the design forbids —
+     cards, pills, fills — without touching the package's markup or logic.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  .cordon {
+    --cordon-bg: var(--color-paper);
+    --cordon-surface: transparent;
+    --cordon-surface-subtle: var(--color-paper-2);
+    --cordon-border: var(--color-rule);
+    --cordon-border-strong: var(--color-ink);
+    --cordon-text: var(--color-ink);
+    --cordon-text-muted: var(--color-ink-3);
+
+    --cordon-pass: var(--color-green);
+    --cordon-pass-bg: transparent;
+    --cordon-refuse: var(--color-red);
+    --cordon-refuse-bg: transparent;
+    --cordon-warn: var(--color-ink-2);
+    --cordon-warn-bg: transparent;
+    --cordon-unknown: var(--color-ink-3);
+    --cordon-unknown-bg: transparent;
+
+    --cordon-accent: var(--color-ink);
+    --cordon-accent-text: var(--color-paper);
+    --cordon-accent-hover: var(--color-red);
+    --cordon-focus-ring: 2px solid var(--color-ink);
+    --cordon-focus-offset: 2px;
+
+    --cordon-font: var(--font-display);
+    --cordon-font-mono: var(--font-mono);
+    --cordon-font-size: var(--text-body);
+    --cordon-font-size-sm: var(--text-fine);
+    --cordon-font-size-xs: var(--text-agate);
+    --cordon-line-height: 22px;
+    --cordon-weight-strong: 500;
+
+    --cordon-radius: 0;
+    --cordon-radius-sm: 0;
+    --cordon-radius-pill: 0;
+    --cordon-border-width: 1px;
+    --cordon-gap: 11px;
+    --cordon-gap-sm: 4px;
+    --cordon-pad: 11px;
+    --cordon-pad-sm: 6px;
+    --cordon-shadow: none;
+
+    --cordon-meter-height: 11px;
+    --cordon-meter-track: var(--color-paper-2);
+    --cordon-meter-fill: var(--color-ink);
+    --cordon-meter-fill-warn: var(--color-ink-2);
+    --cordon-meter-fill-full: var(--color-red);
+  }
+
+  /* No cards. A section is a rule and an alignment. */
+  .cordon-card {
+    padding: 0;
+    border: 0;
+    border-top: 1px solid var(--color-ink);
+    padding-top: var(--spacing-tick);
+    gap: var(--spacing-tick);
+  }
+
+  /* No pills. A verdict is a word set in agate under a rule. */
+  .cordon-badge {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    font-family: var(--font-display);
+    font-size: var(--text-agate);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+  }
+
+  .cordon-badge__dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 0;
+  }
+
+  .cordon-title {
+    font-family: var(--font-display);
+    font-size: var(--text-agate);
+    letter-spacing: var(--tracking-mega);
+    text-transform: uppercase;
+    color: var(--color-ink);
+  }
+
+  .cordon-note {
+    font-size: var(--text-fine);
+    line-height: 18px;
+    color: var(--color-ink-3);
+  }
+
+  .cordon-fields dt {
+    font-size: var(--text-agate);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    color: var(--color-ink-3);
+  }
+
+  .cordon-fields dd {
+    font-family: var(--font-mono);
+    font-size: var(--text-fine);
+  }
+
+  .cordon-wallet-button,
+  .cordon-button {
+    font-family: var(--font-display);
+    font-size: var(--text-fine);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    padding: var(--spacing-tick) var(--spacing-bl);
+  }
+
+  .cordon-empty {
+    border-style: solid;
+    border-color: var(--color-rule);
+    text-align: left;
+  }
+
+  /* The package's own refusal block is not used on these pages — the signal
+     panel is — but a nested one inside <PassportCard> must still obey. */
+  .cordon-refusal {
+    border: 2px solid var(--color-red);
+    background: transparent;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   REDUCED MOTION — settle straight to the final state. Nothing tweens, nothing
+   is withheld: the page arrives already showing what it would have shown.
+   ═══════════════════════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 1ms !important;
+  }
 }

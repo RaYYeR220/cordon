@@ -1,29 +1,26 @@
 import type { Metadata } from "next";
-import Link from "next/link";
+
+import { Providers } from "./providers";
 
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Cordon",
+  title: "Cordon — public record",
   description:
-    "Credential-gated, on-chain-enforced policy for shielded value on Starknet.",
+    "A gate the pool cannot settle around. Credential and policy enforcement for shielded STRK20 value on Starknet.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body className="min-h-screen">
-        <header className="border-b border-neutral-800">
-          <nav className="mx-auto flex max-w-5xl items-center gap-6 px-6 py-4 text-sm">
-            <Link href="/" className="font-semibold tracking-tight">
-              Cordon
-            </Link>
-            <Link href="/debug" className="text-neutral-400 hover:text-neutral-100">
-              Debug
-            </Link>
-          </nav>
-        </header>
-        <main className="mx-auto max-w-5xl px-6 py-10">{children}</main>
+        <a
+          href="#record"
+          className="sr-only focus:not-sr-only focus:absolute focus:left-gut focus:top-gut focus:z-50 focus:border focus:border-ink focus:bg-paper focus:px-bl focus:py-tick focus:no-underline"
+        >
+          Skip to the record
+        </a>
+        <Providers>{children}</Providers>
       </body>
     </html>
   );
