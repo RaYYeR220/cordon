@@ -42,7 +42,7 @@ fn stranger_cannot_register_an_issuer() {
     let cordon = setup();
 
     start_cheat_caller_address(cordon.issuer_registry.contract_address, stranger());
-    cordon.issuer_registry.register_issuer(OTHER_ISSUER_ID, 0x1234, "ipfs://rogue");
+    cordon.issuer_registry.register_issuer(OTHER_ISSUER_ID, 0x1234, stranger(), "ipfs://rogue");
 }
 
 #[test]
@@ -54,13 +54,27 @@ fn stranger_cannot_deactivate_an_issuer() {
     cordon.issuer_registry.deactivate_issuer(ISSUER_ID);
 }
 
+/// The operator role rotates only by its current holder — not by a stranger, and not by the
+/// registry owner either. See `test_audit_regressions::m02_*` for why the owner case matters.
 #[test]
-#[should_panic(expected: 'Caller is not the owner')]
+#[should_panic(expected: 'CORDON_NOT_OPERATOR')]
 fn stranger_cannot_set_an_operator() {
     let cordon = setup();
 
     start_cheat_caller_address(cordon.issuer_registry.contract_address, stranger());
     cordon.issuer_registry.set_issuer_operator(ISSUER_ID, stranger());
+}
+
+/// And the issuer can hand it on.
+#[test]
+fn the_operator_can_rotate_its_own_role() {
+    let cordon = setup();
+
+    start_cheat_caller_address(cordon.issuer_registry.contract_address, issuer_operator());
+    cordon.issuer_registry.set_issuer_operator(ISSUER_ID, stranger());
+    stop_cheat_caller_address(cordon.issuer_registry.contract_address);
+
+    assert_eq!(cordon.issuer_registry.issuer_operator(ISSUER_ID), stranger());
 }
 
 /// An issuer id is a permanent citation. Rebinding its key would retroactively change what every
@@ -71,7 +85,7 @@ fn issuer_id_cannot_be_rebound() {
     let cordon = setup();
 
     start_cheat_caller_address(cordon.issuer_registry.contract_address, owner());
-    cordon.issuer_registry.register_issuer(ISSUER_ID, 0x1234, "ipfs://takeover");
+    cordon.issuer_registry.register_issuer(ISSUER_ID, 0x1234, issuer_operator(), "ipfs://takeover");
 }
 
 #[test]
@@ -80,7 +94,7 @@ fn issuer_id_zero_is_reserved() {
     let cordon = setup();
 
     start_cheat_caller_address(cordon.issuer_registry.contract_address, owner());
-    cordon.issuer_registry.register_issuer(0, 0x1234, "ipfs://nobody");
+    cordon.issuer_registry.register_issuer(0, 0x1234, issuer_operator(), "ipfs://nobody");
 }
 
 #[test]
@@ -89,7 +103,7 @@ fn issuer_key_zero_is_rejected() {
     let cordon = setup();
 
     start_cheat_caller_address(cordon.issuer_registry.contract_address, owner());
-    cordon.issuer_registry.register_issuer(OTHER_ISSUER_ID, 0, "ipfs://keyless");
+    cordon.issuer_registry.register_issuer(OTHER_ISSUER_ID, 0, issuer_operator(), "ipfs://keyless");
 }
 
 #[test]
@@ -97,7 +111,7 @@ fn issuer_key_zero_is_rejected() {
 fn operator_cannot_be_set_for_an_unknown_issuer() {
     let cordon = setup();
 
-    start_cheat_caller_address(cordon.issuer_registry.contract_address, owner());
+    start_cheat_caller_address(cordon.issuer_registry.contract_address, issuer_operator());
     cordon.issuer_registry.set_issuer_operator(OTHER_ISSUER_ID, issuer_operator());
 }
 

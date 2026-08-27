@@ -167,6 +167,7 @@ fn an_unlimited_policy_is_publishable() {
     let unlimited = Policy {
         required_claim: CLAIM,
         issuer_id: ISSUER_ID,
+        token: 0.try_into().unwrap(),
         max_amount: 0,
         epoch_length: 0,
         max_per_epoch: 0,

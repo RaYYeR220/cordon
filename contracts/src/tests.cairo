@@ -1,4 +1,5 @@
 mod common;
+mod test_audit_regressions;
 mod test_gate;
 mod test_hashing;
 mod test_issuer_registry;

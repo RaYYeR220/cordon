@@ -2,8 +2,8 @@
 //!
 //! The world these helpers build is the mainnet one in miniature: an issuer registry with one live
 //! issuer, a revocation registry that reads operator rights from it, a payer policy and a payee
-//! claim policy, a gate wired to all three registries, and a mock pool holding the tokens. Every
-//! test starts from [`setup`] and then breaks exactly one thing.
+//! claim policy, a gate wired to all three registries *and to the mock pool*, and that pool
+//! holding the tokens. Every test starts from [`setup`] and then breaks exactly one thing.
 
 use snforge_std::signature::stark_curve::{StarkCurveKeyPairImpl, StarkCurveSignerImpl};
 use snforge_std::signature::{KeyPair, KeyPairTrait, SignerTrait};
@@ -13,6 +13,7 @@ use snforge_std::{
 };
 use starknet::ContractAddress;
 use crate::hashing;
+use crate::hashing::legs;
 use crate::interfaces::{
     IIssuerRegistryDispatcher, IIssuerRegistryDispatcherTrait, IPolicyGateDispatcher,
     IPolicyRegistryDispatcher, IPolicyRegistryDispatcherTrait, IRevocationRegistryDispatcher,
@@ -47,7 +48,7 @@ pub const NONCE: felt252 = 'nonce_0';
 pub const PAYEE_NONCE: felt252 = 'nonce_p';
 pub const SETTLEMENT_ID: felt252 = 'stl_0';
 
-/// The chain the suite pretends to be on, so the `:V2` action hash is reproducible.
+/// The chain the suite pretends to be on, so the `:V3` action hash is reproducible.
 pub const CHAIN_ID: felt252 = 'SN_MAIN';
 
 /// One hour, in seconds. Long enough to be a realistic velocity window.
@@ -94,10 +95,14 @@ pub struct Cordon {
 }
 
 /// A payer policy with a per-transaction cap and an hourly velocity window, pinned to one issuer.
+///
+/// `token` is left open here so the bulk of the suite exercises policy logic rather than the
+/// allowlist; the allowlist has its own tests.
 pub fn default_policy() -> Policy {
     Policy {
         required_claim: CLAIM,
         issuer_id: ISSUER_ID,
+        token: 0.try_into().unwrap(),
         max_amount: MAX_AMOUNT,
         epoch_length: EPOCH_LENGTH,
         max_per_epoch: MAX_PER_EPOCH,
@@ -131,12 +136,17 @@ pub fn setup_with_policy(policy: Policy) -> Cordon {
 
 /// As [`setup`], with both policies chosen by the caller.
 pub fn setup_with_policies(policy: Policy, claim_policy: Policy) -> Cordon {
-    // Pin the clock and the chain so credential expiry, epoch arithmetic and the `:V2` action hash
+    // Pin the clock and the chain so credential expiry, epoch arithmetic and the `:V3` action hash
     // all mean something.
     start_cheat_block_timestamp_global(START_TIME);
     start_cheat_chain_id_global(CHAIN_ID);
 
     let owner_address = owner();
+
+    // The pool is deployed first: the gate takes its address at construction and never lets it
+    // change, so there is no bootstrap order in which the gate learns it later.
+    let pool_address = deploy("MockPool", @array![]);
+    let token = deploy("MockERC20", @array![]);
 
     let issuer_registry_address = deploy("IssuerRegistry", @array![owner_address.into()]);
     let revocation_registry_address = deploy(
@@ -146,12 +156,10 @@ pub fn setup_with_policies(policy: Policy, claim_policy: Policy) -> Cordon {
     let gate_address = deploy(
         "PolicyGate",
         @array![
-            owner_address.into(), issuer_registry_address.into(),
+            owner_address.into(), pool_address.into(), issuer_registry_address.into(),
             revocation_registry_address.into(), policy_registry_address.into(),
         ],
     );
-    let pool_address = deploy("MockPool", @array![]);
-    let token = deploy("MockERC20", @array![]);
 
     let issuer_key = KeyPairTrait::<felt252, felt252>::from_secret_key(ISSUER_SECRET);
     let subject_key = KeyPairTrait::<felt252, felt252>::from_secret_key(SUBJECT_SECRET);
@@ -161,8 +169,8 @@ pub fn setup_with_policies(policy: Policy, claim_policy: Policy) -> Cordon {
     let policy_registry = IPolicyRegistryDispatcher { contract_address: policy_registry_address };
 
     start_cheat_caller_address(issuer_registry_address, owner_address);
-    issuer_registry.register_issuer(ISSUER_ID, issuer_key.public_key, "ipfs://cordon-kyc");
-    issuer_registry.set_issuer_operator(ISSUER_ID, issuer_operator());
+    issuer_registry
+        .register_issuer(ISSUER_ID, issuer_key.public_key, issuer_operator(), "ipfs://cordon-kyc");
     stop_cheat_caller_address(issuer_registry_address);
 
     start_cheat_caller_address(policy_registry_address, owner_address);
@@ -252,38 +260,46 @@ pub impl CordonImpl of CordonTrait {
     }
 
     //
-    // Action signatures — the `:V2` hash, bound to this chain and this gate
+    // Action signatures — the `:V3` hash, bound to this chain, this gate, this pool and this leg
     //
 
-    /// The payer's authorisation for one settlement under [`POLICY_ID`].
-    fn sign_action(
-        self: @Cordon, amount: u128, nonce: felt252, note_id: felt252,
-    ) -> (felt252, felt252) {
-        self.sign_action_as(*self.subject_key, POLICY_ID, note_id, amount, nonce)
-    }
-
-    /// The general form: any key, any policy, any note.
+    /// The general form. Every field the gate will hash, chosen by the caller.
     fn sign_action_as(
         self: @Cordon,
         key: KeyPair<felt252, felt252>,
+        leg: felt252,
         policy_id: felt252,
         note_id: felt252,
         amount: u128,
         nonce: felt252,
+        terms_hash: felt252,
     ) -> (felt252, felt252) {
         key
             .sign(
                 hashing::subject_action_hash(
                     CHAIN_ID,
                     (*self.gate).contract_address,
+                    (*self.pool).contract_address,
+                    leg,
                     policy_id,
                     note_id,
                     *self.token,
                     amount,
                     nonce,
+                    terms_hash,
                 ),
             )
             .unwrap()
+    }
+
+    /// A complete payer authorisation for a `Direct` leg.
+    fn direct_auth(
+        self: @Cordon, amount: u128, nonce: felt252, note_id: felt252,
+    ) -> SubjectAuthorization {
+        let credential = self.credential();
+        let (sig_r, sig_s) = self
+            .sign_action_as(*self.subject_key, legs::DIRECT, POLICY_ID, note_id, amount, nonce, 0);
+        SubjectAuthorization { policy_id: POLICY_ID, credential, amount, sig_r, sig_s, nonce }
     }
 
     //
@@ -297,52 +313,80 @@ pub impl CordonImpl of CordonTrait {
 
     /// A direct settlement with a caller-chosen nonce, for replay tests.
     fn settle_with_nonce(self: @Cordon, amount: u128, nonce: felt252) -> Span<OpenNoteDeposit> {
-        let credential = self.credential();
-        let (sig_r, sig_s) = self.sign_action(amount, nonce, NOTE_ID);
-        self.settle_raw(amount, credential, sig_r, sig_s, nonce)
+        self.settle_auth(amount, self.direct_auth(amount, nonce, NOTE_ID))
     }
 
-    /// The escape hatch every direct-refusal test uses: settle with one component swapped out.
+    /// The escape hatch every direct-refusal test uses: a caller-built authorisation, and a
+    /// separately chosen amount for the pool to withdraw.
+    fn settle_auth(
+        self: @Cordon, withdrawn: u128, payer: SubjectAuthorization,
+    ) -> Span<OpenNoteDeposit> {
+        self.apply(GateOperation::Direct(payer), withdrawn.into(), NOTE_ID)
+    }
+
+    /// A direct settlement built from a caller-supplied credential and signature.
     fn settle_raw(
         self: @Cordon,
-        amount: u128,
+        withdrawn: u128,
         credential: Credential,
+        amount: u128,
         sig_r: felt252,
         sig_s: felt252,
         nonce: felt252,
     ) -> Span<OpenNoteDeposit> {
-        let payer = SubjectAuthorization { policy_id: POLICY_ID, credential, sig_r, sig_s, nonce };
-        self.apply(GateOperation::Direct(payer), amount.into(), NOTE_ID)
+        self
+            .settle_auth(
+                withdrawn,
+                SubjectAuthorization {
+                    policy_id: POLICY_ID, credential, amount, sig_r, sig_s, nonce,
+                },
+            )
     }
 
     //
     // Two-step settlement
     //
 
-    /// Funds the fixture settlement with everything correct.
+    /// Funds the fixture settlement for the fixture payee, with everything correct.
     fn fund(self: @Cordon, amount: u128) -> Span<OpenNoteDeposit> {
-        self.fund_terms(SETTLEMENT_ID, amount, CLAIM_POLICY_ID, SETTLEMENT_EXPIRES_AT, NONCE)
+        self
+            .fund_terms(
+                SETTLEMENT_ID,
+                amount,
+                (*self.payee_key).public_key,
+                CLAIM_POLICY_ID,
+                SETTLEMENT_EXPIRES_AT,
+                NONCE,
+            )
     }
 
-    /// Funds with caller-chosen terms.
+    /// Funds with caller-chosen terms, signed by the fixture payer.
     ///
-    /// The funding leg has no open note, so the payer signs `note_id = 0` — exactly what the SDK
-    /// passes when the action array is `withdraw → invoke`.
+    /// The funding leg has no open note, so `note_id` is `0` — exactly what the SDK passes when
+    /// the action array is `withdraw → invoke` — and the payer signs `0` in its place.
     fn fund_terms(
         self: @Cordon,
         settlement_id: felt252,
         amount: u128,
+        payee_subject_key: felt252,
         payee_claim_policy_id: felt252,
         expires_at: u64,
         nonce: felt252,
     ) -> Span<OpenNoteDeposit> {
-        let credential = self.credential();
-        let (sig_r, sig_s) = self.sign_action(amount, nonce, 0);
-        let payer = SubjectAuthorization { policy_id: POLICY_ID, credential, sig_r, sig_s, nonce };
+        let terms_hash = hashing::settlement_terms_hash(
+            settlement_id, payee_subject_key, payee_claim_policy_id, expires_at,
+        );
+        let (sig_r, sig_s) = self
+            .sign_action_as(*self.subject_key, legs::FUND, POLICY_ID, 0, amount, nonce, terms_hash);
+        let payer = SubjectAuthorization {
+            policy_id: POLICY_ID, credential: self.credential(), amount, sig_r, sig_s, nonce,
+        };
         self
             .apply(
                 GateOperation::Fund(
-                    FundTerms { payer, settlement_id, payee_claim_policy_id, expires_at },
+                    FundTerms {
+                        payer, settlement_id, payee_subject_key, payee_claim_policy_id, expires_at,
+                    },
                 ),
                 amount.into(),
                 0,
@@ -351,18 +395,38 @@ pub impl CordonImpl of CordonTrait {
 
     /// The payee claims the fixture settlement with everything correct.
     fn claim(self: @Cordon, amount: u128) -> Span<OpenNoteDeposit> {
-        self.claim_with(self.payee_credential(), SETTLEMENT_ID, amount, PAYEE_NONCE)
+        self.claim_as(*self.payee_key, self.payee_credential(), SETTLEMENT_ID, amount, PAYEE_NONCE)
     }
 
-    /// A claim with a caller-chosen credential, settlement or nonce.
-    ///
-    /// The payee's transaction carries no withdraw leg: `withdrawn = 0`. The value is already with
-    /// the gate, put there by the funding leg.
+    /// A claim with a caller-chosen credential, settlement or nonce, signed by the payee key.
     fn claim_with(
         self: @Cordon, credential: Credential, settlement_id: felt252, amount: u128, nonce: felt252,
     ) -> Span<OpenNoteDeposit> {
+        self.claim_as(*self.payee_key, credential, settlement_id, amount, nonce)
+    }
+
+    /// A claim signed by any key at all — how the suite presents a third party.
+    ///
+    /// The payee's transaction carries no withdraw leg: `withdrawn = 0`. The value is already with
+    /// the gate, put there by the funding leg.
+    fn claim_as(
+        self: @Cordon,
+        key: KeyPair<felt252, felt252>,
+        credential: Credential,
+        settlement_id: felt252,
+        amount: u128,
+        nonce: felt252,
+    ) -> Span<OpenNoteDeposit> {
         let (sig_r, sig_s) = self
-            .sign_action_as(*self.payee_key, CLAIM_POLICY_ID, PAYEE_NOTE_ID, amount, nonce);
+            .sign_action_as(
+                key,
+                legs::CLAIM,
+                CLAIM_POLICY_ID,
+                PAYEE_NOTE_ID,
+                amount,
+                nonce,
+                hashing::quoted_settlement_hash(settlement_id),
+            );
         self
             .apply(
                 GateOperation::Claim(ClaimTerms { settlement_id, credential, sig_r, sig_s, nonce }),
@@ -384,7 +448,16 @@ pub impl CordonImpl of CordonTrait {
         nonce: felt252,
         key: KeyPair<felt252, felt252>,
     ) -> Span<OpenNoteDeposit> {
-        let (sig_r, sig_s) = self.sign_action_as(key, POLICY_ID, NOTE_ID, amount, nonce);
+        let (sig_r, sig_s) = self
+            .sign_action_as(
+                key,
+                legs::REFUND,
+                POLICY_ID,
+                NOTE_ID,
+                amount,
+                nonce,
+                hashing::quoted_settlement_hash(settlement_id),
+            );
         self
             .apply(
                 GateOperation::Refund(RefundTerms { settlement_id, sig_r, sig_s, nonce }),

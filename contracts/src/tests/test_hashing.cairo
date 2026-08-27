@@ -1,23 +1,28 @@
 //! Pinned hash vectors.
 //!
-//! `@cordon/sdk` recomputes both preimages in TypeScript. These tests fix the numbers that the two
+//! `@cordon/sdk` recomputes every preimage in TypeScript. These tests fix the numbers the two
 //! implementations have to agree on, so a field reorder or a changed tag fails here — loudly,
 //! with a diff — instead of failing in production as an unexplainable `CORDON_BAD_CRED`.
 //!
-//! The same fixture and the same expected values are reproduced in `contracts/HASHING.md`.
+//! The same fixtures and the same expected values are reproduced in `contracts/HASHING.md`.
 
 use core::poseidon::poseidon_hash_span;
 use starknet::ContractAddress;
-use crate::hashing::domain_separation::{CREDENTIAL_TAG, SUBJECT_ACTION_TAG};
-use crate::hashing::{credential_hash, subject_action_hash};
+use crate::hashing::domain_separation::{CREDENTIAL_TAG, SETTLEMENT_TERMS_TAG, SUBJECT_ACTION_TAG};
+use crate::hashing::{
+    credential_hash, legs, quoted_settlement_hash, settlement_terms_hash, subject_action_hash,
+};
 use crate::types::Credential;
 
 /// The pinned credential hash of [`fixture_credential`].
 pub const FIXTURE_CREDENTIAL_HASH: felt252 =
     0x33416da028165a7c7d2799315f717493f4ffe5379a4f1efe7fb85e1244db1b5;
+/// The pinned settlement-terms hash of the fixture `Fund`.
+pub const FIXTURE_TERMS_HASH: felt252 =
+    0x4d1dba11f958448bb5b3d4b7e39ebba33b79ca80ea191539bc1868a628f7d3d;
 /// The pinned action hash of [`fixture_action_hash`].
 pub const FIXTURE_ACTION_HASH: felt252 =
-    0x1d07660058550812f9d317014bcb9a843f55a2ed9362642fdb0c0eb2eca65e9;
+    0x699b15a2d12d1e8df2bc0aaafd30dfdf1eb8b48380496855dc89b85ada49c83;
 
 /// The fixture credential. Every field is a value a human can read back out of a hex dump.
 fn fixture_credential() -> Credential {
@@ -39,22 +44,50 @@ fn fixture_token() -> ContractAddress {
 }
 
 /// The gate the fixture action is bound to. An arbitrary but fixed deployment address — the point
-/// of `:V2` is that changing this changes the hash.
+/// of the binding is that changing this changes the hash.
 fn fixture_gate() -> ContractAddress {
     0x02c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de001.try_into().unwrap()
 }
 
-/// The fixture settlement authorisation: mainnet, the gate above, and the same payment the
-/// credential fixture describes a payer for.
+/// The pool the fixture action will be pulled by.
+fn fixture_pool() -> ContractAddress {
+    0x0900100c0011ea1100c0011ea1100c0011ea1100c0011ea1100c0011ea11002.try_into().unwrap()
+}
+
+/// The payee the fixture settlement names.
+fn fixture_payee_key() -> felt252 {
+    0x066ee00a11ce00a11ce00a11ce00a11ce00a11ce00a11ce00a11ce00a11ce00
+}
+
+/// The fixture settlement's terms: id, payee, claim policy, expiry.
+fn fixture_terms_hash() -> felt252 {
+    settlement_terms_hash('stl_0', fixture_payee_key(), 'RECV_KYC_L2_V1', 1_800_007_200)
+}
+
+/// The fixture authorisation: a `Fund` leg on mainnet, at the gate above, through the pool above.
 fn fixture_action_hash() -> felt252 {
     subject_action_hash(
-        'SN_MAIN', fixture_gate(), 'PAY_ACCREDITED_V1', 'note_0', fixture_token(), 400, 'nonce_0',
+        'SN_MAIN',
+        fixture_gate(),
+        fixture_pool(),
+        legs::FUND,
+        'PAY_ACCREDITED_V1',
+        0,
+        fixture_token(),
+        400,
+        'nonce_0',
+        fixture_terms_hash(),
     )
 }
 
 #[test]
 fn credential_hash_matches_pinned_vector() {
     assert_eq!(credential_hash(@fixture_credential()), FIXTURE_CREDENTIAL_HASH);
+}
+
+#[test]
+fn settlement_terms_hash_matches_pinned_vector() {
+    assert_eq!(fixture_terms_hash(), FIXTURE_TERMS_HASH);
 }
 
 #[test]
@@ -87,21 +120,41 @@ fn credential_preimage_is_the_documented_field_list() {
     assert_eq!(poseidon_hash_span(preimage), credential_hash(@fixture_credential()));
 }
 
-/// The action preimage, likewise spelled out — eight elements since `:V2`.
+/// The settlement-terms preimage, spelled out.
+#[test]
+fn terms_preimage_is_the_documented_field_list() {
+    let tag: felt252 = 0x434f52444f4e5f534554544c454d454e545f5445524d533a5631;
+    let settlement_id_stl_0: felt252 = 0x73746c5f30;
+    let payee_subject_key: felt252 = fixture_payee_key();
+    let claim_policy_recv_kyc_l2_v1: felt252 = 0x524543565f4b59435f4c325f5631;
+    let expires_at: felt252 = 1_800_007_200;
+
+    let preimage = [
+        tag, settlement_id_stl_0, payee_subject_key, claim_policy_recv_kyc_l2_v1, expires_at,
+    ]
+        .span();
+
+    assert_eq!(poseidon_hash_span(preimage), FIXTURE_TERMS_HASH);
+    assert_eq!(poseidon_hash_span(preimage), fixture_terms_hash());
+}
+
+/// The action preimage, likewise spelled out — eleven elements since `:V3`.
 #[test]
 fn action_preimage_is_the_documented_field_list() {
-    let tag_cordon_subject_action_v2: felt252 = 0x434f52444f4e5f5355424a4543545f414354494f4e3a5632;
+    let tag: felt252 = 0x434f52444f4e5f5355424a4543545f414354494f4e3a5633;
     let chain_id_sn_main: felt252 = 0x534e5f4d41494e;
     let gate_address: felt252 = 0x02c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de001;
+    let pool_address: felt252 = 0x0900100c0011ea1100c0011ea1100c0011ea1100c0011ea1100c0011ea11002;
+    let leg_fund: felt252 = 0x434f52444f4e5f4c45475f46554e44;
     let policy_id_pay_accredited_v1: felt252 = 0x5041595f414343524544495445445f5631;
-    let note_id_note_0: felt252 = 0x6e6f74655f30;
+    let note_id: felt252 = 0;
     let strk_token: felt252 = 0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d;
     let amount: felt252 = 400;
     let nonce_nonce_0: felt252 = 0x6e6f6e63655f30;
 
     let preimage = [
-        tag_cordon_subject_action_v2, chain_id_sn_main, gate_address, policy_id_pay_accredited_v1,
-        note_id_note_0, strk_token, amount, nonce_nonce_0,
+        tag, chain_id_sn_main, gate_address, pool_address, leg_fund, policy_id_pay_accredited_v1,
+        note_id, strk_token, amount, nonce_nonce_0, FIXTURE_TERMS_HASH,
     ]
         .span();
 
@@ -143,69 +196,125 @@ fn every_credential_field_moves_the_hash() {
 }
 
 #[test]
+fn every_terms_field_moves_the_hash() {
+    let base = fixture_terms_hash();
+    let payee = fixture_payee_key();
+
+    assert_ne!(settlement_terms_hash('stl_1', payee, 'RECV_KYC_L2_V1', 1_800_007_200), base);
+    assert_ne!(settlement_terms_hash('stl_0', payee + 1, 'RECV_KYC_L2_V1', 1_800_007_200), base);
+    assert_ne!(settlement_terms_hash('stl_0', payee, 'RECV_OTHER_V1', 1_800_007_200), base);
+    assert_ne!(settlement_terms_hash('stl_0', payee, 'RECV_KYC_L2_V1', 1_800_007_201), base);
+}
+
+#[test]
 fn every_action_field_moves_the_hash() {
     let chain = 'SN_MAIN';
     let gate = fixture_gate();
+    let pool = fixture_pool();
     let policy = 'PAY_ACCREDITED_V1';
     let token = fixture_token();
+    let terms = fixture_terms_hash();
     let base = fixture_action_hash();
 
-    let other_address: ContractAddress = 0x1234.try_into().unwrap();
+    let other: ContractAddress = 0x1234.try_into().unwrap();
 
     assert_ne!(
-        subject_action_hash('SN_SEPOLIA', gate, policy, 'note_0', token, 400, 'nonce_0'), base,
+        subject_action_hash(
+            'SN_SEPOLIA', gate, pool, legs::FUND, policy, 0, token, 400, 'nonce_0', terms,
+        ),
+        base,
     );
     assert_ne!(
-        subject_action_hash(chain, other_address, policy, 'note_0', token, 400, 'nonce_0'), base,
+        subject_action_hash(
+            chain, other, pool, legs::FUND, policy, 0, token, 400, 'nonce_0', terms,
+        ),
+        base,
     );
     assert_ne!(
-        subject_action_hash(chain, gate, 'PAY_KYC_L2_V1', 'note_0', token, 400, 'nonce_0'), base,
+        subject_action_hash(
+            chain, gate, other, legs::FUND, policy, 0, token, 400, 'nonce_0', terms,
+        ),
+        base,
     );
-    assert_ne!(subject_action_hash(chain, gate, policy, 'note_1', token, 400, 'nonce_0'), base);
     assert_ne!(
-        subject_action_hash(chain, gate, policy, 'note_0', other_address, 400, 'nonce_0'), base,
+        subject_action_hash(
+            chain, gate, pool, legs::DIRECT, policy, 0, token, 400, 'nonce_0', terms,
+        ),
+        base,
     );
-    assert_ne!(subject_action_hash(chain, gate, policy, 'note_0', token, 401, 'nonce_0'), base);
-    assert_ne!(subject_action_hash(chain, gate, policy, 'note_0', token, 400, 'nonce_1'), base);
+    assert_ne!(
+        subject_action_hash(
+            chain, gate, pool, legs::FUND, 'PAY_KYC_L2_V1', 0, token, 400, 'nonce_0', terms,
+        ),
+        base,
+    );
+    assert_ne!(
+        subject_action_hash(
+            chain, gate, pool, legs::FUND, policy, 'note_0', token, 400, 'nonce_0', terms,
+        ),
+        base,
+    );
+    assert_ne!(
+        subject_action_hash(chain, gate, pool, legs::FUND, policy, 0, other, 400, 'nonce_0', terms),
+        base,
+    );
+    assert_ne!(
+        subject_action_hash(chain, gate, pool, legs::FUND, policy, 0, token, 401, 'nonce_0', terms),
+        base,
+    );
+    assert_ne!(
+        subject_action_hash(chain, gate, pool, legs::FUND, policy, 0, token, 400, 'nonce_1', terms),
+        base,
+    );
+    assert_ne!(
+        subject_action_hash(chain, gate, pool, legs::FUND, policy, 0, token, 400, 'nonce_0', 0),
+        base,
+    );
 }
 
-/// The two bindings `:V2` added, called out on their own because they are the whole reason for the
-/// version bump: the same authorisation must not travel to another network or another deployment.
+/// The four leg tags are distinct, which is what stops one authorisation being executed as
+/// another leg. Under `:V2` they were absent, and a payer's direct payment doubled as a funding
+/// instruction whose every term the submitter chose.
 #[test]
-fn the_action_hash_is_bound_to_a_chain_and_a_gate() {
-    let policy = 'PAY_ACCREDITED_V1';
-    let token = fixture_token();
-    let elsewhere: ContractAddress =
-        0x0decafdecafdecafdecafdecafdecafdecafdecafdecafdecafdecafdecafde
-        .try_into()
-        .unwrap();
-
-    let mainnet = subject_action_hash(
-        'SN_MAIN', fixture_gate(), policy, 'note_0', token, 400, 'nonce_0',
-    );
-    let sepolia = subject_action_hash(
-        'SN_SEPOLIA', fixture_gate(), policy, 'note_0', token, 400, 'nonce_0',
-    );
-    let other_gate = subject_action_hash(
-        'SN_MAIN', elsewhere, policy, 'note_0', token, 400, 'nonce_0',
-    );
-
-    assert_ne!(mainnet, sepolia);
-    assert_ne!(mainnet, other_gate);
-    assert_ne!(sepolia, other_gate);
+fn the_four_leg_tags_are_distinct() {
+    assert_ne!(legs::DIRECT, legs::FUND);
+    assert_ne!(legs::DIRECT, legs::CLAIM);
+    assert_ne!(legs::DIRECT, legs::REFUND);
+    assert_ne!(legs::FUND, legs::CLAIM);
+    assert_ne!(legs::FUND, legs::REFUND);
+    assert_ne!(legs::CLAIM, legs::REFUND);
 }
 
-/// The tags are what stop a credential signature being replayed as an action signature. If they
-/// ever collided, a subject who signs a credential-shaped message would be authorising payments.
+/// `Direct` uses a literal zero terms hash, not the hash of four zeros — so a `Direct`
+/// authorisation and a settlement-quoting one can never coincide.
+#[test]
+fn the_direct_terms_hash_is_zero_not_a_hash_of_zeros() {
+    assert_ne!(quoted_settlement_hash(0), 0);
+    assert_ne!(settlement_terms_hash(0, 0, 0, 0), 0);
+}
+
+/// A quoted settlement hash names its settlement and nothing else, so a claim signature is valid
+/// for exactly one escrow.
+#[test]
+fn a_quoted_settlement_hash_is_bound_to_its_id() {
+    assert_ne!(quoted_settlement_hash('stl_0'), quoted_settlement_hash('stl_1'));
+    assert_eq!(quoted_settlement_hash('stl_0'), settlement_terms_hash('stl_0', 0, 0, 0));
+}
+
+/// The tags are what stop one preimage being replayed as another. If they ever collided, a subject
+/// who signs a credential-shaped message would be authorising payments.
 #[test]
 fn domain_tags_are_distinct() {
     assert_ne!(CREDENTIAL_TAG, SUBJECT_ACTION_TAG);
+    assert_ne!(CREDENTIAL_TAG, SETTLEMENT_TERMS_TAG);
+    assert_ne!(SUBJECT_ACTION_TAG, SETTLEMENT_TERMS_TAG);
 }
 
-/// A credential is portable by design and an authorisation is not, so only one of the two carries
-/// a version bump. Pinning both tags here makes an accidental edit to either a test failure.
+/// A credential is portable by design and an authorisation is not, so only one of them carries a
+/// version bump. Pinning the tags here makes an accidental edit to either a test failure.
 #[test]
 fn domain_tags_are_the_documented_versions() {
     assert_eq!(CREDENTIAL_TAG, 'CORDON_CREDENTIAL:V1');
-    assert_eq!(SUBJECT_ACTION_TAG, 'CORDON_SUBJECT_ACTION:V2');
+    assert_eq!(SUBJECT_ACTION_TAG, 'CORDON_SUBJECT_ACTION:V3');
+    assert_eq!(SETTLEMENT_TERMS_TAG, 'CORDON_SETTLEMENT_TERMS:V1');
 }

@@ -71,11 +71,16 @@ fn revoking_twice_is_surfaced() {
     cordon.revocation_registry.revoke(ISSUER_ID, CREDENTIAL_ID);
 }
 
+/// The issuer registry pointer is fixed at construction and there is no setter for it.
+///
+/// This is load-bearing rather than tidy: an owner who could re-point it could install a registry
+/// naming them the operator of every issuer, and then revoke anything they liked — which is
+/// precisely the property `revoke` promises does not exist.
 #[test]
-#[should_panic(expected: 'Caller is not the owner')]
-fn stranger_cannot_repoint_the_issuer_registry() {
+fn the_issuer_registry_pointer_is_fixed_at_construction() {
     let cordon = setup();
 
-    start_cheat_caller_address(cordon.revocation_registry.contract_address, stranger());
-    cordon.revocation_registry.set_issuer_registry(stranger());
+    assert_eq!(
+        cordon.revocation_registry.issuer_registry(), cordon.issuer_registry.contract_address,
+    );
 }
