@@ -23,6 +23,7 @@ import {
   deriveSubjectKeypair,
   feltEquals,
   generateSubjectKeypair,
+  refusalForCode,
   subjectKeyTypedData,
   summarizeCredential,
   validateCredential,
@@ -316,21 +317,13 @@ export function useCordonCredential(
 
   const refusals = useMemo<Refusal[]>(() => {
     const found = check?.refusals ? [...check.refusals] : [];
-    // `is_issuer_active` answering false is a refusal the local check cannot see on its own.
+    // `is_issuer_active` answering false is a refusal the local check cannot see on its own: it
+    // compares fields, and this one is a fact about the registry. The wording comes from the SDK's
+    // decoder rather than from a copy kept here, so there is exactly one place a refusal is
+    // described and nothing to drift out of step when a code is reworded.
     if (issuerActive === false && !found.some((refusal) => refusal.code === "CORDON_BAD_ISSUER")) {
-      const badIssuer = check?.refusals.find((refusal) => refusal.code === "CORDON_BAD_ISSUER");
-      if (!badIssuer) {
-        found.unshift({
-          code: "CORDON_BAD_ISSUER",
-          title: "The issuer is not accepted",
-          explanation:
-            "The issuer registry reports this credential's issuer as unknown or deactivated, so " +
-            "the gate will not accept anything it signed.",
-          source: "gate",
-          remedy: "issuer",
-          step: 4,
-        });
-      }
+      const badIssuer = refusalForCode("CORDON_BAD_ISSUER");
+      if (badIssuer) found.unshift(badIssuer);
     }
     return found;
   }, [check, issuerActive]);

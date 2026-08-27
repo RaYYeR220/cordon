@@ -313,6 +313,52 @@ describe("the note id the subject has to sign over", () => {
     expect(actions.map((action) => action["type"])).toEqual(["withdraw", "invoke"]);
   });
 
+  it("generates a random settlement id rather than letting one be chosen", async () => {
+    render(
+      <Harness
+        chain={defaultChainState()}
+        leg="fund"
+        amount={10n * ONE_STRK}
+        noteId={null}
+        payeeSubjectKey={payeeKey.publicKey}
+        payeeClaimPolicyId="ACCREDITED"
+        expiresAt={Math.floor(Date.now() / 1000) + 3600}
+      />,
+    );
+    await connectAndPay();
+
+    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(1));
+    const actions = mocks.invoke.mock.calls[0]?.[0] as Array<Record<string, unknown>>;
+    const calldata = actions[1]?.["calldata"] as string[];
+    // Somewhere in the Fund calldata is an id with real entropy. An id is single-use forever and
+    // is the only handle in the event log, so a memorable one can be burned ahead of you by a
+    // stranger and links the funding to the claim to whatever record it came from.
+    const widest = calldata
+      .filter((item) => item.startsWith("0x"))
+      .reduce((best, item) => (BigInt(item) > BigInt(best) ? item : best), "0x0");
+    expect(BigInt(widest)).toBeGreaterThan(1n << 64n);
+  });
+
+  it("refuses a guessable settlement id even when one is passed in", async () => {
+    render(
+      <Harness
+        chain={defaultChainState()}
+        leg="fund"
+        amount={10n * ONE_STRK}
+        noteId={null}
+        settlementId="0x2024"
+        payeeSubjectKey={payeeKey.publicKey}
+        payeeClaimPolicyId="ACCREDITED"
+        expiresAt={Math.floor(Date.now() / 1000) + 3600}
+      />,
+    );
+    await connectAndPay();
+
+    // The SDK rejects it, and the hook reports the refusal instead of submitting.
+    await waitFor(() => expect(screen.getByText(/entropy|guessable|random/i)).toBeInTheDocument());
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
   it("blocks a fund that names no payee, which anyone could then claim", async () => {
     render(
       <Harness

@@ -56,11 +56,17 @@ no note id, and the payee presents their own credential later on `claim`.
   amount={amount}
   credential={passport.credential}
   subjectPrivateKey={passport.subject?.privateKey}
-  settlementId={settlementId}
+  payeeSubjectKey={PAYEE_PSEUDONYM}   // only this pseudonym can claim
   payeeClaimPolicyId={POLICY}
   expiresAt={Math.floor(Date.now() / 1000) + 86_400}
 />
 ```
+
+Note what is absent: a settlement id. The SDK generates a random one, and that is not a
+convenience. An id is single-use forever and is the only handle in the event log, so a memorable
+one can be burned ahead of you by a stranger and ties the funding to the claim to whatever record
+it came from. Passing an invoice number is refused outright. Read the generated id back from
+`payment.actions`, or from the `SettlementFunded` row in `<GateFeed>`, and give it to the payee.
 
 ## Seeing a refusal
 

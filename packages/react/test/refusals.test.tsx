@@ -9,7 +9,7 @@
  */
 
 import { screen } from "@testing-library/react";
-import { decodeRefusal, refusalForCode } from "@cordon/sdk";
+import { decodeRefusal, refusalCodes, refusalForCode } from "@cordon/sdk";
 import { describe, expect, it } from "vitest";
 
 import { RefusalNotice } from "../src/index.js";
@@ -60,6 +60,14 @@ const CASES = [
     expect: /Fund\/Claim flow/,
   },
 ] as const;
+
+/** The sentence `<RefusalNotice>` uses to say who can act, one per `remedy`. */
+const REMEDY_SENTENCES: Record<string, string> = {
+  payer: "You can fix this: change the payment and try again.",
+  issuer: "Only the credential's issuer can fix this",
+  operator: "Only the registry owner can fix this",
+  integrator: "The transaction was assembled wrongly.",
+};
 
 describe("decoding a revert into a refusal", () => {
   for (const testCase of CASES) {
@@ -135,5 +143,58 @@ describe("<RefusalNotice>", () => {
       rpc: makeRpc(defaultChainState()),
     });
     expect(screen.getByText(/Only the credential's issuer can fix this/)).toBeInTheDocument();
+  });
+});
+
+/**
+ * The refusal table belongs to the SDK, not to this package.
+ *
+ * There are 48 codes today and there were 33 a few days ago; `CORDON_UNEXPECTED_VALUE` existed and
+ * no longer does. A copy kept here would have gone stale on each of those changes, and a stale
+ * refusal is worse than a missing one — it explains a rule that is not the rule that fired. These
+ * pin the property that every code the SDK knows renders, with no local table and no special cases.
+ */
+describe("every refusal the SDK knows", () => {
+  it("renders without this package knowing anything about it", () => {
+    const codes = refusalCodes();
+    expect(codes.length).toBeGreaterThan(40);
+
+    for (const code of codes) {
+      const refusal = refusalForCode(code);
+      expect(refusal, `${code} has no entry`).toBeDefined();
+
+      const { unmount } = renderWithCordon(<RefusalNotice refusal={refusal ?? null} />, {
+        rpc: makeRpc(defaultChainState()),
+      });
+      expect(screen.getByText(code)).toBeInTheDocument();
+      expect(screen.getByText(refusal?.title ?? "")).toBeInTheDocument();
+      // Every refusal says who can act on it. A remedy this package did not anticipate would
+      // render a blank line where the advice should be.
+      const advice = REMEDY_SENTENCES[refusal?.remedy ?? ""];
+      expect(advice, `no advice rendered for remedy ${refusal?.remedy}`).toBeDefined();
+      expect(screen.getByRole("alert").textContent).toContain(advice as string);
+      unmount();
+    }
+  });
+
+  it("carries the codes the audited contracts added", () => {
+    for (const code of [
+      "CORDON_STALE_ALLOWANCE",
+      "CORDON_NOT_THE_PAYEE",
+      "CORDON_UNDERFUNDED",
+      "CORDON_PAYEE_OVER_CAP",
+      "CORDON_TOKEN_NOT_ALLOWED",
+      "CORDON_ZERO_PAYEE",
+      "CORDON_NOTE_ID_NOT_ZERO",
+      "CORDON_LEDGER_BROKEN",
+      "CORDON_NOTHING_TO_SWEEP",
+    ]) {
+      expect(refusalForCode(code), `${code} is missing`).toBeDefined();
+      expect(decodeRefusal(revertReason(code)).code).toBe(code);
+    }
+  });
+
+  it("no longer knows the code the audit removed", () => {
+    expect(refusalForCode("CORDON_UNEXPECTED_VALUE")).toBeUndefined();
   });
 });
