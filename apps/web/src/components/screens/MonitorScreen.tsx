@@ -319,7 +319,7 @@ export function MonitorScreen() {
               <td className="num">
                 {row.epoch === null ? <span className="text-ink-3">—</span> : row.epoch.toString()}
               </td>
-              <td className="code">{row.code ?? <span className="text-ink-3">—</span>}</td>
+              <td className="code panic">{row.code ?? <span className="text-ink-3">—</span>}</td>
               <td className="text-ink-3">{row.origin}</td>
               <td>
                 {row.reference === null ? (

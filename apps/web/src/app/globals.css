@@ -968,9 +968,11 @@
     min-width: 28ch;
   }
 
+  /* In a refused row, the verdict and the panic code are red. The amount and
+     the claim are not: they are the payment's own facts, and red in this
+     product names a refusal rather than shading everything near one. */
   .agate tr[data-verdict="refused"] .decision,
-  .agate tr[data-verdict="refused"] .code,
-  .agate tr[data-verdict="refused"] .amount {
+  .agate .panic {
     color: var(--color-red);
   }
 

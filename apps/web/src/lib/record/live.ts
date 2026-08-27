@@ -16,6 +16,3 @@ export const LIVE_POLICY_ID = read(process.env.NEXT_PUBLIC_CORDON_POLICY_ID);
 
 /** The pool user a live demo payment credits. */
 export const LIVE_PAYEE = read(process.env.NEXT_PUBLIC_CORDON_PAYEE);
-
-/** The resolved open note id the subject signs over, when the operator knows one. */
-export const LIVE_NOTE_ID = read(process.env.NEXT_PUBLIC_CORDON_NOTE_ID);

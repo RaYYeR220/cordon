@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useMemo, useState } from "react";
 import {
   ConnectWallet,
   useCordonContext,
@@ -30,7 +30,7 @@ import {
   shorten,
   strk,
 } from "@/lib/record/format";
-import { LIVE_NOTE_ID, LIVE_PAYEE, LIVE_POLICY_ID } from "@/lib/record/live";
+import { LIVE_PAYEE, LIVE_POLICY_ID } from "@/lib/record/live";
 import {
   HERO_REVERT,
   POOL_FEE,
@@ -117,6 +117,23 @@ export function PayScreen() {
     autoRunKey: `${source.mode}:${amount.toString()}:${refusal?.code ?? "clear"}`,
   });
 
+  // The user asked a question and the verdict is the answer, so focus moves
+  // there — but only when they asked. A verdict that is simply on the page when
+  // it loads must not steal the caret.
+  const verdict = useRef<HTMLDivElement>(null);
+  const asked = useRef(false);
+
+  const runAgain = useCallback(() => {
+    asked.current = true;
+    run.run();
+  }, [run]);
+
+  useEffect(() => {
+    if (!run.settled || !asked.current) return;
+    asked.current = false;
+    verdict.current?.focus();
+  }, [run.settled]);
+
   const policy = source.live ? livePolicy.policy : SAMPLE_POLICY.policy;
   const cap = policy && policy.maxAmount > 0n ? policy.maxAmount : null;
   const ceiling = policy && policy.maxPerEpoch > 0n ? policy.maxPerEpoch : null;
@@ -158,6 +175,7 @@ export function PayScreen() {
       />
 
       {source.live ? <LivePreconditions payment={payment} /> : null}
+      {source.live ? <LiveBindingState payment={payment} /> : null}
 
       <section className="grid4 items-start pt-bl">
         {/* ── what is being composed ─────────────────────────────────────── */}
@@ -196,7 +214,11 @@ export function PayScreen() {
           </fieldset>
 
           <div className="border-t border-ink pt-tick pb-bl">
-            <BindingControl mode={binding} onChange={setBinding} noteId={LIVE_NOTE_ID} />
+            <BindingControl
+              mode={binding}
+              onChange={setBinding}
+              noteId={source.live ? payment.noteId : null}
+            />
           </div>
 
           <Rows>
@@ -301,7 +323,7 @@ export function PayScreen() {
                   </i>
                   , note_binding=
                   <i className="not-italic text-ink">
-                    {binding === "strong" ? "the resolved note" : "NOTE_ANY"}
+                    {source.live && payment.noteId ? shorten(payment.noteId) : "the resolved note"}
                   </i>
                   , payer=Credential&#123;…&#125;, sig_r, sig_s, nonce<b>)</b>
                 </>
@@ -332,11 +354,31 @@ export function PayScreen() {
           />
 
           <div className="flex flex-wrap items-baseline justify-between gap-tick pt-bl">
-            <button type="button" className="btn" onClick={run.run}>
-              Run the gate again
-            </button>
+            <div className="flex flex-wrap gap-tick">
+              <button type="button" className="btn" onClick={runAgain}>
+                Run the gate again
+              </button>
+              {source.live ? (
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => void payment.pay()}
+                  disabled={!payment.ready || payment.busy}
+                >
+                  {payment.busy ? "Working" : "Submit for real"}
+                </button>
+              ) : null}
+            </div>
             <p className="label" aria-live="polite">
-              {run.phase === "stepping"
+              {source.live && payment.busy
+                ? payment.status === "preparing"
+                  ? "The wallet is resolving the note and proving the transaction"
+                  : payment.status === "awaiting-signature"
+                    ? "Waiting for the wallet"
+                    : payment.status === "submitted"
+                      ? "On chain, not yet final"
+                      : "Building"
+                : run.phase === "stepping"
                 ? `Step ${run.ran} of ${STEP_COUNT}`
                 : run.phase === "driving"
                   ? "Driving the amount to the line"
@@ -347,6 +389,12 @@ export function PayScreen() {
                     : "Ready"}
             </p>
           </div>
+
+          {source.live && payment.bindingDescription ? (
+            <p className="note pt-bl">
+              What was signed: {payment.bindingDescription}
+            </p>
+          ) : null}
 
           {skipped.length ? (
             <p className="note pt-bl">
@@ -503,7 +551,15 @@ export function PayScreen() {
       />
       <Rule weight={refusal ? "signal" : "ink"} />
 
-      <div aria-live="polite" aria-atomic="false" className="pt-bl">
+      <div
+        ref={verdict}
+        tabIndex={-1}
+        role="status"
+        aria-live="polite"
+        aria-atomic="false"
+        aria-label="The gate's verdict"
+        className="pt-bl"
+      >
         {run.settled && refusal ? (
           <>
             <RefusalSignal
@@ -590,6 +646,55 @@ function LivePreconditions({ payment }: { payment: ReturnType<typeof useGatedPay
         <ConnectWallet title={null} />
       </div>
     </section>
+  );
+}
+
+/**
+ * What the prepare-twice flow is doing, and what it refused to do.
+ *
+ * `note-drift` and `prepare-failed` are the two states worth naming. Neither is
+ * a failure of the payment: the first is the system failing closed because the
+ * note moved between prepares, and the second is a wallet that cannot resolve
+ * calldata at prepare time — which makes a bound authorisation impossible and
+ * an unbound one the only alternative, so the package stops instead.
+ */
+function LiveBindingState({ payment }: { payment: ReturnType<typeof useGatedPayment> }) {
+  if (payment.status !== "note-drift" && payment.status !== "prepare-failed") return null;
+
+  return (
+    <div className="border-y border-ink py-tick" role="status">
+      <p className="font-display text-agate uppercase tracking-[var(--tracking-mega)]">
+        {payment.status === "note-drift" ? "The note moved" : "This wallet cannot bind"}
+      </p>
+      <p className="lede pt-tick">
+        {payment.status === "note-drift" ? (
+          <>
+            The open note changed between the two prepares, so the binding the subject signed no
+            longer matches the transaction. Nothing was submitted — submitting would have reverted
+            with <span className="font-mono text-red">CORDON_NOTE_MISMATCH</span>. Sign again for
+            the new note.
+          </>
+        ) : (
+          <>
+            This wallet cannot resolve calldata at prepare time, so a bound authorisation is
+            impossible here. The alternative is an unbound one, and this app does not sign those.
+            The answer is a wallet that implements <span className="font-mono">strk20PrepareInvoke</span>.
+          </>
+        )}
+      </p>
+      {payment.drift ? (
+        <dl className="rows mt-bl">
+          <div className="rw">
+            <dt>Signed for note</dt>
+            <dd className="v">{shorten(payment.drift.signedNoteId)}</dd>
+          </div>
+          <div className="rw">
+            <dt>Wallet prepared</dt>
+            <dd className="v">{shorten(payment.drift.preparedNoteId)}</dd>
+          </div>
+        </dl>
+      ) : null}
+    </div>
   );
 }
 

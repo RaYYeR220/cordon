@@ -288,7 +288,7 @@ export function PassportScreen() {
                 <td className="wrap">
                   {refused ? (
                     <>
-                      <span className="code">{verdict.preflight.refusal?.code}</span>{" "}
+                      <span className="code panic">{verdict.preflight.refusal?.code}</span>{" "}
                       <span className="text-ink-3">
                         at step {verdict.preflight.refusal?.step ?? "—"} of {STEP_COUNT} —{" "}
                         {verdict.preflight.refusal?.title.toLowerCase()}

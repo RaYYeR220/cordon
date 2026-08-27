@@ -1,6 +1,7 @@
 # @cordon/web
 
-The Cordon web app and the STRK20 wallet layer it is built on.
+Cordon's product surface: five screens set as a public record, plus an
+engineering console.
 
 ```bash
 cp .env.example .env.local   # optional; the defaults target mainnet
@@ -10,63 +11,103 @@ npm run build                # production build, type-checked
 npm run lint
 ```
 
+## The screens
+
+| route | what it is |
+| --- | --- |
+| `/` | the cover: the thesis, the cordon line drawn once, one link to the money shot |
+| `/pay` | compose a gated payment and watch the gate's pipeline run against it |
+| `/passport` | the credential, and precisely why it fails the policies it fails |
+| `/issuer` | issue, revoke, publish — and what revocation costs |
+| `/monitor` | the public record of decisions |
+| `/auditor` | verify a scoped disclosure without handing over a viewing key |
+| `/debug` | the STRK20 engineering console, in its own skin |
+
+## Two records, never blended
+
+The app renders either the **seeded sample record** or the **chain**, and the
+strip under the masthead says which before a reader has looked at a number.
+
+Sample mode is the default, because a judge arrives with no wallet and still has
+to be able to read the whole product. What it seeds is data, not verdicts: the
+policies and credentials in `src/lib/record/sample.ts` are real `@cordon/sdk`
+objects carrying real STARK-curve signatures, and every decision on the page is
+computed by the same `preflight()` the live path runs. Sample transaction hashes
+are printed and marked rather than linked — a link to a transaction that does not
+exist is worse than no link.
+
+Live mode is offered only when `NEXT_PUBLIC_CORDON_GATE_ADDRESS` is set. Without
+a gate there is nothing to read, and a switch that leads to a page of
+`unavailable` would be a worse answer than saying so.
+
+Nothing is ever filled in on the chain's behalf. A value that could not be read
+renders as `unavailable`, a meter with no readable value is striped and is not a
+`meter`, and a velocity bar never shows a full allowance it did not read.
+
+## The design system
+
+`src/app/globals.css` holds the whole of it as Tailwind v4 theme tokens: nine
+colours, three faces, a `10 / 12 / 14 / 16 / 20 / 28 / 44 / 96 / 216` type scale,
+an 11px baseline unit, and two motion speeds. There are no cards, no shadows and
+no rounded corners — `border-radius` is `0` everywhere, enforced by an unlayered
+rule at the bottom of the file.
+
+Two devices carry the product and no more:
+
+- **The cordon line** (`src/components/record/CordonLine.tsx`). Every limit is
+  one hard boundary with 45° hatching over the prohibited region and the amount
+  visibly crossing it. Four fixed lanes in the track — cap label, bars, zone
+  words, amount endcap — so no two labels can collide at any width. A
+  per-transfer cap, an epoch budget, an authorisation deadline and a disclosure
+  scope are all the same picture.
+- **The signal-word panel** (`src/components/record/SignalPanel.tsx`). Spent on
+  refusal and nothing else. It arrives as a hard cut, because a revert is not a
+  transition.
+
+Red is reserved for refusal: a named refusal, a count of refusals, the region
+past a limit, and the cordon line's cap marker. Nothing else, ever.
+
+## Where the enforcement comes from
+
+Not from this app. `src/lib/record/enforcement.ts` builds the pipeline from
+`allRefusals()` in `@cordon/sdk`, grouped by the gate's own step numbers, so the
+ladder is the contract's order or it is nothing — and new refusal codes appear
+without a change here. `src/lib/record/verdict.ts` asks `preflight()` for the
+decision. The count of steps is never written down in copy; it is read from
+`STEP_COUNT`.
+
+`src/components/record/RefusalSignal.tsx` renders any refusal the gate can
+raise, using the SDK's own title, explanation and remedy. There is no
+code-to-copy mapping in this app to fall out of date.
+
+## Consuming `@cordon/react`
+
+The app takes the package's hooks for everything with logic in it —
+`useCordonWallet`, `useCordonCredential`, `useCordonPolicy`, `useGatedPayment`,
+`useGateFeed` — and its components where their shape suits the page
+(`<ConnectWallet>`, `<PassportCard>`). It dresses them entirely through the
+`--cordon-*` custom properties in `globals.css`; the package stylesheet is
+imported into its own cascade layer so those overrides win.
+
+## Environment
+
+| variable | what it does |
+| --- | --- |
+| `NEXT_PUBLIC_STARKNET_RPC_URL` | read RPC. Cartridge answers spec 0.10.2 consistently. |
+| `NEXT_PUBLIC_STRK20_POOL_ADDRESS` | the STRK20 privacy pool. |
+| `NEXT_PUBLIC_CORDON_GATE_ADDRESS` | the `PolicyGate`. Unset means sample mode only. |
+| `NEXT_PUBLIC_CORDON_POLICY_ID` | the published policy live payments settle under. |
+| `NEXT_PUBLIC_CORDON_PAYEE` | the pool user a live demo payment credits. |
+
 ## Layout
 
 ```
-src/lib/strk20/   the wallet layer — plain TypeScript, no React, no DOM rendering
-src/hooks/        React bindings over that layer
-src/components/   presentational pieces
-src/app/          routes; /debug is the engineering console
+src/app/(record)/   the five screens and the cover, under the record's chrome
+src/app/debug/      the engineering console, with its own dark layout
+src/components/record/  the design system: cordon line, signal panel, ladder, tables
+src/components/screens/ one component per screen
+src/components/shell/   masthead, contents strip, source strip, colophon
+src/lib/record/     the sample record, the enforcement ladder, formatting
+src/lib/strk20/     app configuration and the demo action builders; the rest of
+                    the wallet layer lives in @cordon/react/strk20
 ```
-
-`src/lib/strk20/` is the seed of the package Cordon publishes, so it must stay
-framework-free. Nothing in it may import React or reach for app state.
-
-| module | what it owns |
-| --- | --- |
-| `types.ts` | the four action shapes, the capability and error records |
-| `spec-compat.ts` | compile-time proof those shapes match the wallet API |
-| `config.ts` | chain constants, RPC, pool address, pool fee, explorer links |
-| `wallet.ts` | wallet-standard discovery, connect, disconnect |
-| `capability.ts` | the read-only STRK20 support probe |
-| `balances.ts` | shielded balances (wallet) and public balances (RPC) |
-| `actions.ts` | typed builders and the local pre-flight validator |
-| `client.ts` | submit, wait for the receipt, read it back |
-| `errors.ts` | JSON-RPC codes, Cairo revert reasons, panic-code decoding |
-
-## /debug
-
-Connects a wallet, runs the capability probe, shows public and shielded
-balances, and builds each of the four action arrays — rendering the exact JSON
-that goes to the wallet before anything is submitted, and the transaction hash
-with a Voyager link afterwards.
-
-## Things worth knowing before changing this
-
-- **`starknet` must stay on 10.4 or newer.** The `latest` tag on npm still points
-  at 10.0.2, which has none of the STRK20 API, so the dependency is pinned to
-  `^10.4.0` on purpose. Do not "fix" it to `latest`.
-- **The wallet picker does not use starknetkit's `connect()`.** It builds the
-  wallet-standard registry directly with
-  `createStore({ eip1193Adapters: [] })`. The default adapter list bridges
-  EIP-6963 providers in, which makes MetaMask's Starknet Snap get probed on every
-  discovery pass and spams its unlock popup.
-- **Use an RPC endpoint that serves one spec version.** The default,
-  `https://api.cartridge.gg/x/starknet/mainnet`, serves 0.10.2 consistently.
-  `https://rpc.starknet.lava.build` is a load-balanced mixed pool that
-  intermittently answers 0.8.1 and breaks 0.10-style calls mid-session.
-- **The STRK20 methods are optional.** A wallet can speak the whole Starknet
-  wallet API and still not implement them — Braavos answers
-  `wallet_strk20Balances` with "Not implemented". The app probes rather than
-  assumes, and renders an explanatory state when support is absent.
-- **An `invoke`-only action array is rejected** with `INVALID_REQUEST_PAYLOAD`.
-  Value has to route through the contract first: `withdraw` → `transfer("OPEN")`
-  → `invoke`.
-- **`"OPEN"`, `"${poolAddress}"` and `"${openNoteIds[0]}"` are literal strings**
-  the wallet substitutes while assembling the transaction. Hex-encoding them
-  breaks the substitution.
-- **Confirmation is slow.** A STRK20 transaction has a STARK proof generated
-  before submission and verified on-chain after it, so the wait budget is 400
-  retries at 3s.
-- **Every private action costs a flat 6 STRK pool fee**, charged once per
-  transaction and paid from an already-shielded balance.

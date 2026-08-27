@@ -2,23 +2,35 @@
 
 import { useEffect, useState } from "react";
 
+import { MAX_UNBOUND_WINDOW_SECONDS } from "@cordon/sdk";
+
 import { CordonLine } from "./CordonLine";
 
 /**
  * How an authorisation is bound to the note it may fill.
  *
- * Two modes, and they are not two settings of equal standing:
+ * The gate accepts two kinds and they are not two settings of equal standing.
  *
- * **Strong** names the note. The payment can only land where it was signed to
- * land — not redirected by us, not by the pool, and not by a stranger who reads
- * the authorisation off a reverted transaction.
+ * **Strong** names the note. The wallet resolves the open note id, the subject
+ * signs a binding to that exact felt, and the wallet is asked to prepare a
+ * second time to prove the note has not moved underneath it. The payment can
+ * then only land where it was signed to land — not redirected by us, not by
+ * the pool, and not by a stranger who reads the authorisation off a reverted
+ * transaction.
  *
- * **Unbound** (`NOTE_ANY`) lets the payment land in any note, so the gate forces
- * a deadline of at most 600 seconds. That deadline is doing real work, because
- * a reverted Starknet transaction is published with its full calldata and a
- * revert does not burn the nonce: for as long as the window is open, an
- * authorisation that failed for a mundane reason is harvestable by whoever
- * reads the chain. Strong binding has no such window.
+ * **Unbound** (`CORDON_NOTE_ANY`) lets the payment land in any note, so the gate
+ * forces a deadline of at most {@link MAX_UNBOUND_WINDOW_SECONDS} seconds. That
+ * deadline is doing real work, because a reverted Starknet transaction is
+ * published with its full calldata and a revert does not burn the nonce: for as
+ * long as that window is open, an authorisation that failed for a mundane
+ * reason is harvestable by whoever reads the chain.
+ *
+ * This app never signs one. Neither does `@cordon/react` — it fails closed
+ * rather than falling back, and a wallet that cannot resolve calldata at
+ * prepare time is reported as a dead end rather than quietly downgraded. So
+ * this control is not a switch between two modes; it is the choice explained,
+ * with the second option shown for exactly as long as it takes to see why it is
+ * not offered.
  *
  * The deadline is a limit, so it is drawn the way every other limit in this
  * product is drawn — as a cordon line, with the prohibited region past it
@@ -27,9 +39,6 @@ import { CordonLine } from "./CordonLine";
 
 export type BindingMode = "strong" | "unbound";
 
-/** The most the gate will allow an unbound authorisation to live. */
-export const MAX_UNBOUND_WINDOW_SECONDS = 600;
-
 export function BindingControl({
   mode,
   onChange,
@@ -37,7 +46,7 @@ export function BindingControl({
 }: {
   mode: BindingMode;
   onChange: (mode: BindingMode) => void;
-  /** The note a strong authorisation names, when the app has resolved one. */
+  /** The note the signed authorisation names, once the wallet has resolved one. */
   noteId: string | null;
 }) {
   const remaining = useWindowCountdown(mode === "unbound", MAX_UNBOUND_WINDOW_SECONDS);
@@ -51,13 +60,13 @@ export function BindingControl({
             active={mode === "strong"}
             onClick={() => onChange("strong")}
             label="Strong"
-            hint="bound to one note"
+            hint="what this app signs"
           />
           <ModeButton
             active={mode === "unbound"}
             onClick={() => onChange("unbound")}
             label="Unbound"
-            hint="NOTE_ANY · weaker"
+            hint="why it is not offered"
           />
         </div>
       </fieldset>
@@ -71,18 +80,19 @@ export function BindingControl({
           <p className="note pt-tick">
             Note{" "}
             <span className="font-mono text-ink">
-              {noteId ?? '"${openNoteIds[0]}", resolved by the wallet at assembly time'}
+              {noteId ?? "resolved by the wallet at prepare time"}
             </span>
-            . The gate hashes the felt it actually received, so a subject signature has to cover the
-            resolved value — which is what makes redirection impossible rather than merely
-            discouraged.
+            . The wallet is asked to prepare twice: once to learn the note id the subject signs
+            over, and once more to prove it has not moved. If it has, the payment stops and says so
+            rather than settling against a note nobody authorised.
           </p>
         </>
       ) : (
         <>
           <p className="lede max-w-none">
-            The payment may land in any note, so the gate forces a deadline. This mode is weaker and
-            it is not the default.
+            An unbound authorisation may land in any note, so the gate forces a deadline. It is
+            weaker, and this app does not sign one — neither does the package underneath it, which
+            fails closed instead of falling back.
           </p>
           <p className="note pt-tick">
             A reverted Starknet transaction is published with its full calldata, and a revert does
@@ -107,8 +117,8 @@ export function BindingControl({
             forbidLabel="Refused past here"
             endcapLabel={`${MAX_UNBOUND_WINDOW_SECONDS - remaining}s elapsed`}
             ticks={["0s", "180s", "360s", "540s", "720s"]}
-            foot="Past the line the gate refuses the authorisation outright — which is the point of forcing one."
-            verdict={{ label: "Open", tone: "idle" }}
+            foot="Past the line the gate refuses the authorisation outright with CORDON_AUTH_EXPIRED — which is the point of forcing a deadline at all."
+            verdict={{ label: "Not signed here", tone: "idle" }}
             valueText={`${MAX_UNBOUND_WINDOW_SECONDS - remaining} seconds elapsed of a ${MAX_UNBOUND_WINDOW_SECONDS} second window; ${remaining} seconds remain.`}
           />
         </>
