@@ -105,13 +105,10 @@ export function ConnectWallet({
           </button>
         </div>
       ) : wallet.wallets.length === 0 ? (
+        // The live region above already carries the explanation, so this says what to do about it
+        // rather than repeating it.
         <p className="cordon-empty">
-          {noWalletMessage ?? (
-            <>
-              No Starknet wallet announced itself to this page. A gated private payment needs one
-              that implements the STRK20 methods.
-            </>
-          )}
+          {noWalletMessage ?? "Install a wallet that implements them, then reload this page."}
         </p>
       ) : (
         <ul className="cordon-wallets">

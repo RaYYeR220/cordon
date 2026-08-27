@@ -12,7 +12,7 @@
  * never published is not the same as a node that would not answer.
  */
 
-import { hash, num, type ProviderInterface } from "starknet";
+import { hash, num } from "starknet";
 import {
   policyFromCalldata,
   settlementFromCalldata,
@@ -25,12 +25,11 @@ import {
 } from "@cordon/sdk";
 
 import type { CordonRegistries } from "./config.js";
-import { available, unavailable } from "./balances.js";
+import { available, unavailable, type ReadProvider } from "./balances.js";
 import { localError } from "./errors.js";
 import type { Reading, Strk20NormalizedError } from "./types.js";
 
-/** The minimum a provider has to do for these reads. `RpcProvider` satisfies it. */
-export type ReadProvider = Pick<ProviderInterface, "callContract">;
+export type { ReadProvider } from "./balances.js";
 
 async function call(
   provider: ReadProvider,
@@ -50,10 +49,20 @@ async function call(
   }
 }
 
+/**
+ * Assert a fixed-width result.
+ *
+ * Only used where the width is a property of *this* module's read rather than of a contract
+ * struct. Struct widths are the SDK's business: `Policy` grew a field the day a token allowlist
+ * was added, and a length check duplicated here would have rejected a policy the SDK could read
+ * perfectly well.
+ */
 function expect(reading: Reading<string[]>, count: number, what: string): Reading<string[]> {
   if (!reading.available) return reading;
   if (reading.value.length !== count) {
-    return unavailable(localError(`${what} returned ${reading.value.length} felts, expected ${count}`));
+    return unavailable(
+      localError(`${what} returned ${reading.value.length} felts, expected ${count}`),
+    );
   }
   return reading;
 }
@@ -96,11 +105,7 @@ export async function readPolicy(
   policyRegistry: Address,
   policyId: FeltLike,
 ): Promise<PolicyReading> {
-  const raw = expect(
-    await call(provider, policyRegistry, "get_policy", [policyId]),
-    7,
-    "get_policy",
-  );
+  const raw = await call(provider, policyRegistry, "get_policy", [policyId]);
   if (!raw.available) {
     const missing =
       raw.error.panicCodes.includes("CORDON_NO_POLICY") ||
@@ -159,11 +164,17 @@ export async function readRegistries(
   const raw = expect(await call(provider, gate, "registries"), 3, "registries");
   if (!raw.available) return raw;
   const [issuer, revocation, policy] = raw.value as [string, string, string];
-  return available({
-    issuerRegistry: toFelt(issuer),
-    revocationRegistry: toFelt(revocation),
-    policyRegistry: toFelt(policy),
-  });
+  try {
+    return available({
+      issuerRegistry: toFelt(issuer),
+      revocationRegistry: toFelt(revocation),
+      policyRegistry: toFelt(policy),
+    });
+  } catch (error) {
+    // A node that answers with something that is not a field element leaves the registries
+    // unknown. Throwing here would take the render tree down with it.
+    return unavailable(localError(`the gate returned unreadable registry addresses: ${(error as Error).message}`));
+  }
 }
 
 /** The epoch index a settlement would be booked into right now. Zero without a velocity limit. */
@@ -204,11 +215,7 @@ export async function readSettlement(
   gate: Address,
   settlementId: FeltLike,
 ): Promise<Reading<Settlement>> {
-  const raw = expect(
-    await call(provider, gate, "get_settlement", [settlementId]),
-    7,
-    "get_settlement",
-  );
+  const raw = await call(provider, gate, "get_settlement", [settlementId]);
   if (!raw.available) return raw;
   try {
     return available(settlementFromCalldata(raw.value));

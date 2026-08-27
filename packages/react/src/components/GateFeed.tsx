@@ -14,8 +14,6 @@
  */
 
 import type { ReactNode } from "react";
-import { feltToShortString } from "@cordon/sdk";
-
 import { useCordonConfig } from "../context/CordonProvider.js";
 import { useGateFeed, type GateFeedEntry, type UseGateFeedOptions } from "../hooks/useGateFeed.js";
 import { formatUnits, relativeTime, shortHex } from "../strk20/index.js";
@@ -60,21 +58,21 @@ function Row({ entry, decimals }: { entry: GateFeedEntry; decimals: number }): R
   }
 
   const { event } = entry;
+  const amount = formatUnits(event.amount, decimals);
   const detail =
     event.kind === "PolicyPassed"
-      ? `${event.policyLabel} · ${formatUnits(event.amount, decimals)}`
-      : event.kind === "SettlementFunded"
-        ? `escrowed ${formatUnits(event.amount, decimals)} · claim policy ${feltToShortString(event.payeeClaimPolicyId) ?? shortHex(event.payeeClaimPolicyId)}`
-        : `${formatUnits(event.amount, decimals)}`;
+      ? `${event.policyLabel} · ${amount}`
+      : event.kind === "DustSwept"
+        ? `${amount} swept to ${shortHex(event.to)}`
+        : `${amount} · settlement ${shortHex(event.settlementId)}`;
 
-  const label =
-    event.kind === "PolicyPassed"
-      ? "passed"
-      : event.kind === "SettlementFunded"
-        ? "funded"
-        : event.kind === "SettlementClaimed"
-          ? "claimed"
-          : "refunded";
+  const label = {
+    PolicyPassed: "passed",
+    SettlementFunded: "funded",
+    SettlementClaimed: "claimed",
+    SettlementRefunded: "refunded",
+    DustSwept: "swept",
+  }[event.kind];
 
   return (
     <li className="cordon-feed__row" data-verdict="pass">
@@ -139,7 +137,8 @@ export function GateFeed({
         <p className="cordon-note">
           Passes are read from the gate&rsquo;s <code>PolicyPassed</code> events, so anyone can
           verify them. A refusal reverts its whole transaction and emits nothing, so refusals are
-          the ones this session watched happen — they exist on chain only as a reverted receipt.
+          the ones this session watched happen — they exist on chain only as a reverted receipt. No
+          event carries a subject pseudonym: the log proves the rules held, not who paid whom.
         </p>
       ) : null}
     </section>

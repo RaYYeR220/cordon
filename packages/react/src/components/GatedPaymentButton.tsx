@@ -143,7 +143,8 @@ export function GatedPaymentButton({
         ) : (
           <>
             {MESSAGE[payment.status]}
-            {payment.transactionHash && payment.voyagerUrl ? (
+            {/* On a refusal the notice below owns the explorer link, so it is not repeated here. */}
+            {payment.transactionHash && payment.voyagerUrl && !(showRefusal && payment.refusal) ? (
               <>
                 {" "}
                 <a

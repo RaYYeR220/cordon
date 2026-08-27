@@ -6,12 +6,27 @@
  * {@link Reading} has no third state that quietly means zero.
  */
 
-import { num, uint256, type ProviderInterface } from "starknet";
+import { num, uint256 } from "starknet";
 
 import { normalizeError } from "./errors.js";
 import type { Address, Available, Reading, Strk20Balance, Unavailable } from "./types.js";
 
 export type { Available, Reading, Unavailable } from "./types.js";
+
+/**
+ * The one provider method a contract read needs.
+ *
+ * Declared as a method rather than a property so parameter types stay bivariant and Starknet.js's
+ * own `RpcProvider` is assignable without a cast — as is any wrapper a host app has built around
+ * one, which is the point.
+ */
+export interface ReadProvider {
+  callContract(call: {
+    contractAddress: string;
+    entrypoint: string;
+    calldata?: string[];
+  }): Promise<string[]>;
+}
 
 export function unavailable(error: unknown): Unavailable {
   return { available: false, error: normalizeError(error) };
@@ -75,7 +90,7 @@ export async function readShieldedBalances(
 
 /** Public ERC-20 balance of an address, read over RPC. */
 export async function readPublicBalance(
-  provider: ProviderInterface,
+  provider: ReadProvider,
   token: Address,
   owner: Address,
 ): Promise<Reading<bigint>> {

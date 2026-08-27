@@ -2,18 +2,20 @@
  * Reading the gate's public record.
  *
  * `PolicyGate` emits an event on every leg that *passes*: `PolicyPassed` names the policy, the
- * subject pseudonym, the token, the amount and the epoch. That is the honest half of a gate feed.
+ * token, the amount and the epoch. That is the honest half of a gate feed.
+ *
+ * **No subject key appears in any of these events, and that is deliberate.** An event carrying the
+ * payer's pseudonym and one carrying the payee's, joinable through a settlement id, would publish
+ * a permanent indexed edge between two counterparties and the exact amount that passed between
+ * them. So the log records that a policy passed and how much moved, and stops there — which means
+ * a feed built on it can show enforcement without showing anyone's payment graph.
  *
  * There is no refusal event, and there cannot be one. A refusal is a panic, a panic reverts the
  * whole pool transaction, and a reverted transaction emits nothing — that is precisely what makes
- * the gate a gate rather than a report. So a refusal is only visible in the receipt of the
+ * the gate a gate rather than a report. A refusal is visible only in the receipt of the
  * transaction that hit it, which is why `useGatedPayment` journals its own refusals into the
  * provider and `<GateFeed>` merges the two streams instead of pretending the chain hands them over
- * together. The feed labels which side of the merge each row came from.
- *
- * What the events do *not* say is who paid or who was paid. `subject_public_key` is a pseudonym
- * the holder generated locally and the sender is a rotating relayer, so the feed is a record of
- * enforcement, not of people.
+ * together. Every row says which half it came from.
  */
 
 import { hash, num } from "starknet";
@@ -29,6 +31,7 @@ export const GATE_EVENT_NAMES = [
   "SettlementFunded",
   "SettlementClaimed",
   "SettlementRefunded",
+  "DustSwept",
 ] as const;
 
 export type GateEventName = (typeof GATE_EVENT_NAMES)[number];
@@ -42,47 +45,27 @@ const SELECTOR_TO_NAME = new Map<bigint, GateEventName>(
   GATE_EVENT_NAMES.map((name) => [num.toBigInt(GATE_EVENT_SELECTORS[name]), name]),
 );
 
-/** A gate event, decoded. The `kind` discriminates; the rest is per-event. */
+/** What every gate event carries, whichever it is. */
+interface GateEventBase {
+  token: Address;
+  amount: bigint;
+  transactionHash: string;
+  blockNumber: number | null;
+}
+
+/** A gate event, decoded. `kind` discriminates; the rest is per-event. */
 export type GateEvent =
-  | {
+  | (GateEventBase & {
       kind: "PolicyPassed";
       policyId: Felt;
       /** Decoded short string when the id is one, otherwise the raw felt. */
       policyLabel: string;
-      subjectPublicKey: Felt;
-      token: Address;
-      amount: bigint;
       epoch: bigint;
-      transactionHash: string;
-      blockNumber: number | null;
-    }
-  | {
-      kind: "SettlementFunded";
-      settlementId: Felt;
-      payeeClaimPolicyId: Felt;
-      token: Address;
-      amount: bigint;
-      expiresAt: number;
-      transactionHash: string;
-      blockNumber: number | null;
-    }
-  | {
-      kind: "SettlementClaimed";
-      settlementId: Felt;
-      payeeSubjectKey: Felt;
-      token: Address;
-      amount: bigint;
-      transactionHash: string;
-      blockNumber: number | null;
-    }
-  | {
-      kind: "SettlementRefunded";
-      settlementId: Felt;
-      token: Address;
-      amount: bigint;
-      transactionHash: string;
-      blockNumber: number | null;
-    };
+    })
+  | (GateEventBase & { kind: "SettlementFunded"; settlementId: Felt })
+  | (GateEventBase & { kind: "SettlementClaimed"; settlementId: Felt })
+  | (GateEventBase & { kind: "SettlementRefunded"; settlementId: Felt })
+  | (GateEventBase & { kind: "DustSwept"; to: Address });
 
 /** The raw event shape a node returns, reduced to what is needed here. */
 export type RawEvent = {
@@ -119,7 +102,7 @@ export interface EventProvider {
  * Decode one raw event.
  *
  * Returns `null` for anything that is not a gate event this package knows, or whose payload is
- * the wrong length — a partially-decoded event rendered as if it were whole is exactly the kind of
+ * the wrong shape — a partially-decoded event rendered as if it were whole is exactly the kind of
  * fabricated state this package refuses to produce.
  */
 export function decodeGateEvent(raw: RawEvent): GateEvent | null {
@@ -133,86 +116,68 @@ export function decodeGateEvent(raw: RawEvent): GateEvent | null {
   }
   if (!name) return null;
 
-  const transactionHash = raw.transaction_hash ?? "";
-  const blockNumber = typeof raw.block_number === "number" ? raw.block_number : null;
-  const key = (index: number): string | undefined => raw.keys[index];
-  const datum = (index: number): string | undefined => raw.data[index];
+  // Every event is `[selector, one keyed felt]` plus data starting with the token and, for all but
+  // the sweep, the amount in the same position.
+  const keyed = raw.keys[1];
+  const token = raw.data[0];
+  if (keyed === undefined || token === undefined) return null;
 
-  switch (name) {
-    case "PolicyPassed": {
-      const [policyId, subjectPublicKey] = [key(1), key(2)];
-      const [token, amount, epoch] = [datum(0), datum(1), datum(2)];
-      if (!policyId || !subjectPublicKey || !token || amount === undefined || epoch === undefined) {
-        return null;
+  const base: GateEventBase = {
+    token: toFelt(token),
+    amount: 0n,
+    transactionHash: raw.transaction_hash ?? "",
+    blockNumber: typeof raw.block_number === "number" ? raw.block_number : null,
+  };
+
+  try {
+    switch (name) {
+      case "PolicyPassed": {
+        const [amount, epoch] = [raw.data[1], raw.data[2]];
+        if (amount === undefined || epoch === undefined) return null;
+        const policyId = toFelt(keyed);
+        return {
+          ...base,
+          kind: "PolicyPassed",
+          amount: num.toBigInt(amount),
+          policyId,
+          policyLabel: feltToShortString(policyId) ?? policyId,
+          epoch: num.toBigInt(epoch),
+        };
       }
-      const id = toFelt(policyId);
-      return {
-        kind: "PolicyPassed",
-        policyId: id,
-        policyLabel: feltToShortString(id) ?? id,
-        subjectPublicKey: toFelt(subjectPublicKey),
-        token: toFelt(token),
-        amount: num.toBigInt(amount),
-        epoch: num.toBigInt(epoch),
-        transactionHash,
-        blockNumber,
-      };
-    }
-    case "SettlementFunded": {
-      const [settlementId, payeeClaimPolicyId] = [key(1), key(2)];
-      const [token, amount, expiresAt] = [datum(0), datum(1), datum(2)];
-      if (
-        !settlementId ||
-        !payeeClaimPolicyId ||
-        !token ||
-        amount === undefined ||
-        expiresAt === undefined
-      ) {
-        return null;
+      case "SettlementFunded":
+      case "SettlementClaimed":
+      case "SettlementRefunded": {
+        const amount = raw.data[1];
+        if (amount === undefined) return null;
+        return {
+          ...base,
+          kind: name,
+          amount: num.toBigInt(amount),
+          settlementId: toFelt(keyed),
+        };
       }
-      return {
-        kind: "SettlementFunded",
-        settlementId: toFelt(settlementId),
-        payeeClaimPolicyId: toFelt(payeeClaimPolicyId),
-        token: toFelt(token),
-        amount: num.toBigInt(amount),
-        expiresAt: Number(num.toBigInt(expiresAt)),
-        transactionHash,
-        blockNumber,
-      };
+      case "DustSwept": {
+        // The sweep keys the token and puts the recipient first in the data.
+        const [to, amount] = [raw.data[0], raw.data[1]];
+        if (to === undefined || amount === undefined) return null;
+        return {
+          ...base,
+          kind: "DustSwept",
+          token: toFelt(keyed),
+          to: toFelt(to),
+          amount: num.toBigInt(amount),
+        };
+      }
     }
-    case "SettlementClaimed": {
-      const [settlementId, payeeSubjectKey] = [key(1), key(2)];
-      const [token, amount] = [datum(0), datum(1)];
-      if (!settlementId || !payeeSubjectKey || !token || amount === undefined) return null;
-      return {
-        kind: "SettlementClaimed",
-        settlementId: toFelt(settlementId),
-        payeeSubjectKey: toFelt(payeeSubjectKey),
-        token: toFelt(token),
-        amount: num.toBigInt(amount),
-        transactionHash,
-        blockNumber,
-      };
-    }
-    case "SettlementRefunded": {
-      const settlementId = key(1);
-      const [token, amount] = [datum(0), datum(1)];
-      if (!settlementId || !token || amount === undefined) return null;
-      return {
-        kind: "SettlementRefunded",
-        settlementId: toFelt(settlementId),
-        token: toFelt(token),
-        amount: num.toBigInt(amount),
-        transactionHash,
-        blockNumber,
-      };
-    }
+  } catch {
+    // A felt that will not parse means the event is not what its selector claims. Drop it rather
+    // than render half of it.
+    return null;
   }
 }
 
 export type ReadGateEventsOptions = {
-  /** Restrict to these event kinds. Defaults to all four. */
+  /** Restrict to these event kinds. Defaults to all of them. */
   kinds?: readonly GateEventName[];
   /** How far back to look. Defaults to the whole chain, which most nodes will paginate. */
   fromBlock?: number;
@@ -280,7 +245,9 @@ export async function readPolicyPassed(
   if (!reading.available) return reading;
   const passes = reading.value.filter((event) => event.kind === "PolicyPassed");
   if (passes.length === 0 && reading.value.length > 0) {
-    return unavailable(localError("the node returned gate events but none decoded as PolicyPassed"));
+    return unavailable(
+      localError("the node returned gate events but none decoded as PolicyPassed"),
+    );
   }
   return available(passes);
 }

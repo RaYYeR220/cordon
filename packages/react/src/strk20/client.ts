@@ -2,17 +2,36 @@
  * Submitting STRK20 transactions and reading back what happened.
  */
 
-import { num, type ProviderInterface } from "starknet";
+import { num } from "starknet";
 import { validateActions, type Strk20Action } from "@cordon/sdk";
 
 import { WAIT_RETRIES, WAIT_RETRY_INTERVAL_MS } from "./config.js";
 import { normalizeError } from "./errors.js";
+import type { EventProvider } from "./events.js";
+import type { ReadProvider } from "./registries.js";
 import type { Strk20NormalizedError, Strk20SubmitResult } from "./types.js";
 
 /** The subset of `WalletAccountV6` this module needs. */
 export type Strk20Submitter = {
   strk20InvokeTransaction: (actions: Strk20Action[]) => Promise<{ transaction_hash: string }>;
 };
+
+/** The one provider method the submit path needs beyond the reads. */
+export interface TransactionWaiter {
+  waitForTransaction(
+    transactionHash: string,
+    options?: { retries?: number; retryInterval?: number },
+  ): Promise<unknown>;
+}
+
+/**
+ * Everything this package asks of a provider.
+ *
+ * Declared structurally rather than as `RpcProvider` so a host app can hand `<CordonProvider>` the
+ * provider it already has — including one wrapped in its own retry or caching layer — instead of
+ * ending up with two connections to the same node.
+ */
+export interface CordonRpc extends ReadProvider, EventProvider, TransactionWaiter {}
 
 export type SubmitOptions = {
   /** Called as soon as the wallet returns a hash, before confirmation. */
@@ -91,7 +110,7 @@ export function readReceipt(receipt: unknown): {
  */
 export async function submitActions(
   submitter: Strk20Submitter,
-  provider: ProviderInterface,
+  provider: TransactionWaiter,
   actions: Strk20Action[],
   options: SubmitOptions = {},
 ): Promise<SubmitOutcome> {

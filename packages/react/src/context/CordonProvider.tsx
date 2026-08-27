@@ -45,6 +45,7 @@ import {
   type CordonConfig,
   type CordonConfigInput,
   type CordonRegistries,
+  type CordonRpc,
   type DiscoveredWallet,
   type Reading,
   type Strk20Balance,
@@ -73,7 +74,7 @@ export interface SessionRefusal {
 export interface CordonContextValue {
   config: CordonConfig;
   /** Read provider bound to `config.rpcUrl`. Reads go here; the wallet submits through its own. */
-  provider: RpcProvider;
+  provider: CordonRpc;
   storage: CordonStorage | null;
 
   /** Wallets the wallet-standard registry has announced so far. */
@@ -106,6 +107,14 @@ export interface CordonProviderProps {
   /** Gate address at minimum; pool, token, RPC and chain default to the mainnet deployment. */
   config: CordonConfigInput;
   /**
+   * Use this provider for reads instead of building one from `config.rpcUrl`.
+   *
+   * Pass the `RpcProvider` your app already has, so the page holds one connection to the node
+   * rather than two, and so a wrapper you have put around it — retries, caching, a proxy — applies
+   * to Cordon's reads as well.
+   */
+  provider?: CordonRpc;
+  /**
    * Where credentials are persisted. Defaults to `window.localStorage` when there is one, and to
    * nothing at all on a server, so a credential is never written somewhere the app did not ask for.
    */
@@ -117,12 +126,16 @@ export interface CordonProviderProps {
 
 export function CordonProvider({
   config: configInput,
+  provider: suppliedProvider,
   storage,
   discoverWallets = true,
   children,
 }: CordonProviderProps): ReactNode {
   const config = useMemo(() => resolveConfig(configInput), [configInput]);
-  const provider = useMemo(() => new RpcProvider({ nodeUrl: config.rpcUrl }), [config.rpcUrl]);
+  const provider = useMemo<CordonRpc>(
+    () => suppliedProvider ?? new RpcProvider({ nodeUrl: config.rpcUrl }),
+    [suppliedProvider, config.rpcUrl],
+  );
 
   const [wallets, setWallets] = useState<DiscoveredWallet[]>([]);
   const [connection, setConnection] = useState<ConnectedWallet | null>(null);
