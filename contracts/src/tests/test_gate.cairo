@@ -9,6 +9,7 @@ use snforge_std::signature::{KeyPair, KeyPairTrait, SignerTrait};
 use snforge_std::{
     start_cheat_block_timestamp_global, start_cheat_caller_address, stop_cheat_caller_address,
 };
+use starknet::syscalls::call_contract_syscall;
 use crate::hashing;
 use crate::hashing::legs;
 use crate::interfaces::{
@@ -728,4 +729,78 @@ fn there_is_nothing_to_sweep_from_a_clean_gate() {
 
     start_cheat_caller_address(cordon.gate.contract_address, owner());
     cordon.gate.sweep(cordon.token, stranger());
+}
+
+//
+// External introspection
+//
+// The pool and the three registry pointers are immutable, and a wrong one is only fixable by
+// redeploying. That makes them exactly the kind of thing a reviewer should be able to check from
+// outside rather than take on trust, so each one is readable on its own.
+//
+
+#[test]
+fn each_registry_is_readable_on_its_own() {
+    let cordon = setup();
+
+    assert_eq!(cordon.gate.privacy_pool(), cordon.pool.contract_address);
+    assert_eq!(cordon.gate.issuer_registry(), cordon.issuer_registry.contract_address);
+    assert_eq!(cordon.gate.revocation_registry(), cordon.revocation_registry.contract_address);
+    assert_eq!(cordon.gate.policy_registry(), cordon.policy_registry.contract_address);
+}
+
+/// The named getters and the one-call tuple must never disagree — they read the same slots, and a
+/// reviewer who checks one should not get a different answer from the other.
+#[test]
+fn the_named_getters_agree_with_the_tuple() {
+    let cordon = setup();
+
+    let (issuer, revocation, policy) = cordon.gate.registries();
+    assert_eq!(issuer, cordon.gate.issuer_registry());
+    assert_eq!(revocation, cordon.gate.revocation_registry());
+    assert_eq!(policy, cordon.gate.policy_registry());
+}
+
+/// Immutability pinned by a test rather than by a comment.
+///
+/// The audit made these pointers constructor-only on purpose: a registry decides what a credential
+/// *means*, so re-pointing one while a settlement is open would let whoever did it mint a
+/// credential satisfying that settlement's claim policy and take the money. A later reader adding
+/// a "migration" setter should trip over this, not over prose.
+#[test]
+fn the_gate_has_no_registry_setter() {
+    let cordon = setup();
+
+    let result = call_contract_syscall(
+        cordon.gate.contract_address,
+        selector!("set_registries"),
+        array![stranger().into(), stranger().into(), stranger().into()].span(),
+    );
+
+    assert!(result.is_err());
+    // Control: the same syscall against an entrypoint that does exist succeeds, so the assertion
+    // above is about the missing setter and not about the mechanism failing for its own reasons.
+    let control = call_contract_syscall(
+        cordon.gate.contract_address, selector!("privacy_pool"), array![].span(),
+    );
+    assert!(control.is_ok());
+}
+
+#[test]
+fn the_gate_has_no_pool_setter() {
+    let cordon = setup();
+
+    let result = call_contract_syscall(
+        cordon.gate.contract_address,
+        selector!("set_privacy_pool"),
+        array![stranger().into()].span(),
+    );
+
+    assert!(result.is_err());
+    // Control: the same syscall against an entrypoint that does exist succeeds, so the assertion
+    // above is about the missing setter and not about the mechanism failing for its own reasons.
+    let control = call_contract_syscall(
+        cordon.gate.contract_address, selector!("privacy_pool"), array![].span(),
+    );
+    assert!(control.is_ok());
 }

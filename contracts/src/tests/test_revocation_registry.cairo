@@ -1,6 +1,7 @@
 //! Revocation belongs to the issuer, not to the registry owner.
 
 use snforge_std::{start_cheat_caller_address, stop_cheat_caller_address};
+use starknet::syscalls::call_contract_syscall;
 use crate::interfaces::IRevocationRegistryDispatcherTrait;
 use crate::tests::common::{
     CREDENTIAL_ID, ISSUER_ID, OTHER_ISSUER_ID, issuer_operator, owner, setup, stranger,
@@ -83,4 +84,30 @@ fn the_issuer_registry_pointer_is_fixed_at_construction() {
     assert_eq!(
         cordon.revocation_registry.issuer_registry(), cordon.issuer_registry.contract_address,
     );
+}
+
+/// Immutability pinned by a test rather than by a comment.
+///
+/// `revoke` promises that nobody but an issuer's own operator can withdraw its attestations. That
+/// promise rests on this pointer being fixed: an owner who could re-point it could install a
+/// registry naming them the operator of every issuer, and reach the write path in two
+/// transactions.
+#[test]
+fn the_revocation_registry_has_no_issuer_registry_setter() {
+    let cordon = setup();
+
+    let result = call_contract_syscall(
+        cordon.revocation_registry.contract_address,
+        selector!("set_issuer_registry"),
+        array![stranger().into()].span(),
+    );
+
+    assert!(result.is_err());
+
+    // Control: the getter that does exist answers, so the assertion above is about the missing
+    // setter rather than about the mechanism failing for its own reasons.
+    let control = call_contract_syscall(
+        cordon.revocation_registry.contract_address, selector!("issuer_registry"), array![].span(),
+    );
+    assert!(control.is_ok());
 }
