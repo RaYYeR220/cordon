@@ -65,6 +65,20 @@ A payer cannot vouch for a payee: the gate never sees the recipient of the `tran
 and the note id is derived from a channel key it cannot recompute. So payee compliance is enforced
 the only sound way — the payee authorises the claim with their own key, in their own transaction.
 
+### Where a payment is allowed to land
+
+An authorisation names the note it may fill. That matters more than it sounds, because Starknet
+publishes **reverted** transactions with their full calldata, and a revert never records the nonce —
+so a claim that fails for a mundane reason (the window closed, the velocity budget was spent, there
+was too little shielded balance for the pool fee) puts a still-valid authorisation on a public
+ledger. Binding it makes that harmless: a note id commits to its owner's key, so nobody else can
+present a note the authorisation would accept.
+
+Where the destination genuinely cannot be known at signing time, the subject may sign for *any* note
+instead — but only by saying so **inside the message they sign**, and only with a deadline the gate
+caps at ten minutes. The weaker mode is opt-in, visible, and never the default; the gate never drops
+the binding on the user's behalf.
+
 ## What is private, and what is not
 
 Being precise about this matters more than sounding impressive.

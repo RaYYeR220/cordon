@@ -22,6 +22,9 @@ should not have to take any sentence in the README on trust.
 | A payee revoked between funding and claiming cannot take the money | `REPRODUCIBLE` + `VERIFIED-LIVE` | `a_payee_revoked_between_funding_and_claiming_cannot_take_the_money`, plus the mainnet pair in `PROOF.md` |
 | The refusal tests are not vacuous | `REPRODUCIBLE` | mutation checks: deleting the revocation check fails exactly 3 tests; deleting the settlement-status write fails 4. Revert either edit and the suite is green again |
 | A signature cannot be replayed across legs, policies, amounts, gates or chains | `REPRODUCIBLE` | the action preimage binds all of them; see [`contracts/HASHING.md`](./contracts/HASHING.md) and the replay tests |
+| A published authorisation cannot be redirected to a stranger's note | `REPRODUCIBLE` | the authorisation binds the note it may fill, and a note id commits to its owner's key. Tested by the harvested-claim redirection attempt and its negative control — the identical authorisation into the note it was signed for, which pays |
+| An authorisation signed in unbound mode **is** redirectable, which is why it is time-boxed | `REPRODUCIBLE` | `an_unbound_claim_is_redirectable_which_is_why_it_is_time_boxed` asserts the exposure rather than hiding it; the gate refuses an unbound authorisation with no deadline, or one more than 600s out |
+| Unbound mode is as safe as bound mode | `NOT-CLAIMED` | it is not. The destination is chosen after signing, so no contract change can close it — the mode is opt-in, stated inside the signed message, and never the default |
 | Only the pool can drive the gate | `REPRODUCIBLE` | the pool address is fixed at construction and asserted against `get_caller_address()`; regression tests derived from an in-house audit's proof-of-concept exploits |
 
 ## Integration
