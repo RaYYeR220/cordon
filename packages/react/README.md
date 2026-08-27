@@ -19,7 +19,7 @@ Peer dependencies: `react@^19`, `starknet@^10.4.0`, `@cordon/sdk@^0.1.0`.
 
 ```tsx
 import { CordonProvider, ConnectWallet, GatedPaymentButton } from "@cordon/react";
-import "@cordon/react/styles.css";
+import "@cordon/react/styles.css"; // using cascade layers? see Theming — import it into one
 
 <CordonProvider config={{ gateAddress: GATE }}>
   <ConnectWallet />
@@ -208,6 +208,25 @@ Import the stylesheet once, then override custom properties anywhere — on `:ro
 on a single component. Every rule in the stylesheet is wrapped in `:where()`, so its specificity is
 zero and one plain class of yours outranks it. There is no CSS-in-JS runtime and no Tailwind
 dependency.
+
+### If your app uses cascade layers, import the stylesheet into one
+
+Specificity is only half the story. **Unlayered CSS beats every layered rule regardless of
+specificity**, so if your app puts its own styles in `@layer` — which Tailwind v4 does by default —
+a plain `@import "@cordon/react/styles.css"` will silently outrank your entire theme. Nothing errors;
+your `--cordon-*` overrides simply stop applying, and the components keep their defaults.
+
+Pull the stylesheet into a layer you control, declared before your own:
+
+```css
+@layer theme, base, cordon, components, utilities;
+
+@import "tailwindcss";
+@import "@cordon/react/styles.css" layer(cordon);
+```
+
+We shipped this bug in our own application before catching it, which is why it is documented here
+rather than left for you to find.
 
 ```css
 :root {

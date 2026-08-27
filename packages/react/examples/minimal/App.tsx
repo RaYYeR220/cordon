@@ -22,6 +22,9 @@ import {
   useCordonCredential,
   useCordonWallet,
 } from "@cordon/react";
+// Plain import is right here because this example has no cascade layers of its own.
+// In an app that does — Tailwind v4, for instance — import it into a layer instead,
+// or the package's unlayered rules will outrank your theme. See the README's Theming section.
 import "@cordon/react/styles.css";
 
 // ---------------------------------------------------------------- configure me
