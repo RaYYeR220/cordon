@@ -248,3 +248,25 @@ export function readPanicCodes(): string[] {
   }
   return [...codes].sort();
 }
+
+/** The `NOTE_ANY` sentinel as `contracts/src/hashing.cairo` declares it. */
+export function readNoteAny(): Felt {
+  const felt = feltBindings(readContractsFile("src", "hashing.cairo")).get("NOTE_ANY");
+  if (!felt) throw new Error("could not read NOTE_ANY from contracts/src/hashing.cairo");
+  return felt;
+}
+
+/**
+ * `MAX_UNBOUND_WINDOW` as `contracts/src/policy_gate.cairo` declares it.
+ *
+ * Declared `u64` rather than `felt252`, so it needs its own read: the SDK's copy of this number
+ * decides whether an unbound authorisation is refused here or on chain.
+ */
+export function readMaxUnboundWindow(): number {
+  const source = readContractsFile("src", "policy_gate.cairo");
+  const match = /const\s+MAX_UNBOUND_WINDOW\s*:\s*u64\s*=\s*([0-9_]+)\s*;/.exec(source);
+  if (!match) {
+    throw new Error("could not read MAX_UNBOUND_WINDOW from contracts/src/policy_gate.cairo");
+  }
+  return Number((match[1] as string).replace(/_/g, ""));
+}

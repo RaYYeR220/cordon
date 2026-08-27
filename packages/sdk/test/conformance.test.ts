@@ -24,6 +24,8 @@ import {
   DIRECT_TERMS_HASH,
   DOMAIN_TAGS,
   LEG_TAGS,
+  MAX_UNBOUND_WINDOW_SECONDS,
+  NOTE_ANY,
   SETTLEMENT_TERMS_TAG,
   SUBJECT_ACTION_TAG,
   credentialHash,
@@ -41,7 +43,13 @@ import {
   SETTLEMENT_TERMS_FIXTURE,
   SUBJECT_ACTION_FIXTURE,
 } from "./fixtures.js";
-import { readDomainTags, readLegTags, readPinnedVectors } from "./cairo-source.js";
+import {
+  readDomainTags,
+  readLegTags,
+  readMaxUnboundWindow,
+  readNoteAny,
+  readPinnedVectors,
+} from "./cairo-source.js";
 
 /**
  * `credential_hash`, spelled out exactly as `contracts/HASHING.md` and the Cairo fixture do.
@@ -90,17 +98,18 @@ const SETTLEMENT_TERMS_VECTOR = {
 } as const;
 
 /**
- * `subject_action_hash` under the `:V3` tag: a `Fund` leg, bound to a chain, a gate and a pool.
+ * `subject_action_hash` under the `:V4` tag: a `Fund` leg, bound to a chain, a gate and a pool.
  *
  * | Field | Value |
  * | --- | --- |
- * | tag | `CORDON_SUBJECT_ACTION:V3` |
+ * | tag | `CORDON_SUBJECT_ACTION:V4` |
  * | `chain_id` | `SN_MAIN` |
  * | `gate_address` | `0x02c0de00…de001` |
  * | `pool_address` | `0x0900100c…11002` |
  * | `leg` | `CORDON_LEG_FUND` |
  * | `policy_id` | `PAY_ACCREDITED_V1` |
- * | `note_id` | `0` — a funding leg fills no note |
+ * | `note_binding` | `0` — a funding leg fills no note |
+ * | `valid_until` | `1800000300` |
  * | `token` | STRK |
  * | `amount` | `400` |
  * | `nonce` | `nonce_0` |
@@ -108,19 +117,20 @@ const SETTLEMENT_TERMS_VECTOR = {
  */
 const SUBJECT_ACTION_VECTOR = {
   preimage: [
-    "0x434f52444f4e5f5355424a4543545f414354494f4e3a5633",
+    "0x434f52444f4e5f5355424a4543545f414354494f4e3a5634",
     "0x534e5f4d41494e",
     "0x2c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de001",
     "0x900100c0011ea1100c0011ea1100c0011ea1100c0011ea1100c0011ea11002",
     "0x434f52444f4e5f4c45475f46554e44",
     "0x5041595f414343524544495445445f5631",
     "0x0",
+    "0x6b49d32c",
     "0x4718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d",
     "0x190",
     "0x6e6f6e63655f30",
     "0x4d1dba11f958448bb5b3d4b7e39ebba33b79ca80ea191539bc1868a628f7d3d",
   ],
-  hash: "0x699b15a2d12d1e8df2bc0aaafd30dfdf1eb8b48380496855dc89b85ada49c83",
+  hash: "0x15954b6b284f2575533fda03c443131d11a5217061cf1cae05b5055af9c6a22",
 } as const;
 
 describe("pinned vectors", () => {
@@ -164,9 +174,9 @@ describe("pinned vectors", () => {
     expect(poseidon(SUBJECT_ACTION_VECTOR.preimage)).toBe(SUBJECT_ACTION_VECTOR.hash);
   });
 
-  it("nests the terms hash as the eleventh element of the action preimage", () => {
-    expect(SUBJECT_ACTION_VECTOR.preimage).toHaveLength(11);
-    expect(SUBJECT_ACTION_VECTOR.preimage[10]).toBe(SETTLEMENT_TERMS_VECTOR.hash);
+  it("nests the terms hash as the twelfth element of the action preimage", () => {
+    expect(SUBJECT_ACTION_VECTOR.preimage).toHaveLength(12);
+    expect(SUBJECT_ACTION_VECTOR.preimage[11]).toBe(SETTLEMENT_TERMS_VECTOR.hash);
   });
 });
 
@@ -272,7 +282,7 @@ describe("the Cairo source", () => {
 
   it("pins an action preimage the typed builder reproduces field for field", () => {
     const preimage = vectors.subjectAction.preimage as string[];
-    expect(preimage).toHaveLength(11);
+    expect(preimage).toHaveLength(12);
     const [
       tag,
       chainId,
@@ -280,7 +290,8 @@ describe("the Cairo source", () => {
       poolAddress,
       leg,
       policyId,
-      noteId,
+      noteBinding,
+      validUntil,
       token,
       amount,
       nonce,
@@ -298,13 +309,25 @@ describe("the Cairo source", () => {
         poolAddress: poolAddress as string,
         leg: named as keyof typeof LEG_TAGS,
         policyId: policyId as string,
-        noteId: noteId as string,
+        noteBinding: noteBinding as string,
+        validUntil: validUntil as string,
         token: token as string,
         amount: amount as string,
         nonce: nonce as string,
         termsHash: termsHash as string,
       }),
     ).toBe(vectors.subjectAction.expected);
+  });
+});
+
+describe("the NOTE_ANY sentinel", () => {
+  it("is the short string the Cairo constant declares", () => {
+    expect(NOTE_ANY).toBe("0x434f52444f4e5f4e4f54455f414e59");
+    expect(readNoteAny()).toBe(NOTE_ANY);
+  });
+
+  it("caps an unbound window at the same 600 seconds the gate does", () => {
+    expect(MAX_UNBOUND_WINDOW_SECONDS).toBe(readMaxUnboundWindow());
   });
 });
 

@@ -35,6 +35,7 @@ import {
   encodeGateCalldata,
   encodeGateOperation,
   encodeSubjectAuthorization,
+  bindToNote,
   isPlaceholder,
   issueCredential,
   openNoteIdPlaceholder,
@@ -56,12 +57,12 @@ import {
   FIXTURE_POOL,
   STRK,
   TEST_ISSUER_PRIVATE_KEY,
+  RESOLVED_NOTE_ID,
   TEST_SETTLEMENT_ID,
   TEST_SUBJECT_PRIVATE_KEY,
 } from "./fixtures.js";
 
 const PAYEE_ADDRESS = "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde";
-const RESOLVED_NOTE_ID = "note_0";
 const SUBJECT_KEY = subjectPublicKey(TEST_SUBJECT_PRIVATE_KEY);
 
 const payerCredential = issueCredential(CREDENTIAL_FIXTURE, TEST_ISSUER_PRIVATE_KEY);
@@ -77,7 +78,7 @@ const direct = authorizeDirect(
     policyId: "PAY_ACCREDITED_V1",
     credential: payerCredential,
     amount: 400n,
-    noteId: RESOLVED_NOTE_ID,
+    binding: bindToNote(RESOLVED_NOTE_ID),
     nonce: "nonce_0",
   },
   TEST_SUBJECT_PRIVATE_KEY,
@@ -116,7 +117,7 @@ const claim = authorizeClaim(
     settlement,
     settlementId: TEST_SETTLEMENT_ID,
     credential: payeeCredential,
-    noteId: RESOLVED_NOTE_ID,
+    binding: bindToNote(RESOLVED_NOTE_ID),
     nonce: "nonce_2",
   },
   TEST_SUBJECT_PRIVATE_KEY,
@@ -127,7 +128,7 @@ const refund = authorizeRefund(
     context: FIXTURE_CONTEXT,
     settlement,
     settlementId: TEST_SETTLEMENT_ID,
-    noteId: RESOLVED_NOTE_ID,
+    binding: bindToNote(RESOLVED_NOTE_ID),
     nonce: "nonce_3",
   },
   TEST_SUBJECT_PRIVATE_KEY,
@@ -166,9 +167,20 @@ describe("signing a leg", () => {
     expect(claim.termsHash).not.toBe(fund.termsHash);
   });
 
-  it("signs zero as the note id on a Fund, which reserves no note", () => {
+  it("signs zero as the note binding on a Fund, which reserves no note", () => {
     expect(FUND_NOTE_ID).toBe("0x0");
-    expect(fund.noteId).toBe("0x0");
+    expect(fund.payer.noteBinding).toBe("0x0");
+    expect(fund.binding).toEqual({ mode: "note", noteId: "0x0", validUntil: 0 });
+  });
+
+  it("binds Direct, Claim and Refund to the note they will fill", () => {
+    for (const authorization of [direct, claim, refund]) {
+      expect(authorization.binding).toEqual({
+        mode: "note",
+        noteId: toFelt(RESOLVED_NOTE_ID),
+        validUntil: 0,
+      });
+    }
   });
 
   it("takes the claim's amount and policy from the stored settlement, not from the caller", () => {
@@ -184,7 +196,7 @@ describe("signing a leg", () => {
           settlement,
           settlementId: TEST_SETTLEMENT_ID,
           credential: payerCredential,
-          noteId: RESOLVED_NOTE_ID,
+          binding: bindToNote(RESOLVED_NOTE_ID),
         },
         TEST_SUBJECT_PRIVATE_KEY,
       ),
@@ -218,7 +230,7 @@ describe("signing a leg", () => {
           policyId: "PAY_ACCREDITED_V1",
           credential: payerCredential,
           amount: 0n,
-          noteId: RESOLVED_NOTE_ID,
+          binding: bindToNote(RESOLVED_NOTE_ID),
         },
         TEST_SUBJECT_PRIVATE_KEY,
       ),
@@ -234,7 +246,7 @@ describe("signing a leg", () => {
           policyId: "PAY_ACCREDITED_V1",
           credential: payerCredential,
           amount: 400n,
-          noteId: RESOLVED_NOTE_ID,
+          binding: bindToNote(RESOLVED_NOTE_ID),
         },
         TEST_SUBJECT_PRIVATE_KEY,
       ).payer.nonce;
@@ -297,38 +309,42 @@ describe("operation encoding", () => {
     expect(GATE_OPERATION_VARIANT).toEqual({ Direct: 0, Fund: 1, Claim: 2, Refund: 3 });
   });
 
-  it("encodes a subject authorisation as twelve felts, amount in the middle", () => {
+  it("encodes a subject authorisation as fourteen felts in struct order", () => {
     const felts = encodeSubjectAuthorization(direct.payer);
     expect(felts).toEqual([
       direct.payer.policyId,
       ...credentialCalldata(payerCredential),
+      toFelt(RESOLVED_NOTE_ID),
+      "0x0",
       "0x190",
       direct.payer.signature.r,
       direct.payer.signature.s,
       direct.payer.nonce,
     ]);
-    expect(felts).toHaveLength(12);
-    expect(felts[8]).toBe("0x190");
+    expect(felts).toHaveLength(14);
+    expect(felts[8]).toBe(toFelt(RESOLVED_NOTE_ID));
+    expect(felts[9]).toBe("0x0");
+    expect(felts[10]).toBe("0x190");
   });
 
   it("encodes Direct as its index and the payer's authorisation", () => {
     const felts = encodeGateOperation(direct);
     expect(felts[0]).toBe("0x0");
     expect(felts.slice(1)).toEqual(encodeSubjectAuthorization(direct.payer));
-    expect(felts).toHaveLength(13);
+    expect(felts).toHaveLength(15);
   });
 
   it("encodes Fund as index, the payer's authorisation, then the escrow terms", () => {
     const felts = encodeGateOperation(fund);
     expect(felts[0]).toBe("0x1");
-    expect(felts.slice(1, 13)).toEqual(encodeSubjectAuthorization(fund.payer));
-    expect(felts.slice(13)).toEqual([
+    expect(felts.slice(1, 15)).toEqual(encodeSubjectAuthorization(fund.payer));
+    expect(felts.slice(15)).toEqual([
       toFelt(TEST_SETTLEMENT_ID),
       toFelt(FIXTURE_PAYEE_KEY),
       "0x524543565f4b59435f4c325f5631",
       "0x6b49ee20",
     ]);
-    expect(felts).toHaveLength(17);
+    expect(felts).toHaveLength(19);
   });
 
   it("encodes Claim with the payee's credential inline and no policy id", () => {
@@ -336,14 +352,22 @@ describe("operation encoding", () => {
     expect(felts[0]).toBe("0x2");
     expect(felts[1]).toBe(toFelt(TEST_SETTLEMENT_ID));
     expect(felts.slice(2, 9)).toEqual(credentialCalldata(payeeCredential));
-    expect(felts.slice(9)).toEqual([claim.signature.r, claim.signature.s, claim.nonce]);
-    expect(felts).toHaveLength(12);
+    expect(felts.slice(9)).toEqual([
+      toFelt(RESOLVED_NOTE_ID),
+      "0x0",
+      claim.signature.r,
+      claim.signature.s,
+      claim.nonce,
+    ]);
+    expect(felts).toHaveLength(14);
   });
 
   it("encodes Refund as index, settlement, signature and nonce, with no credential", () => {
     expect(encodeGateOperation(refund)).toEqual([
       "0x3",
       toFelt(TEST_SETTLEMENT_ID),
+      toFelt(RESOLVED_NOTE_ID),
+      "0x0",
       refund.signature.r,
       refund.signature.s,
       refund.nonce,
@@ -385,8 +409,8 @@ describe("privacy_invoke calldata", () => {
   });
 
   it("refuses a note id override that disagrees with what was signed", () => {
-    // Sending a different note than the signature covers is CORDON_BAD_SUBJECT_SIG, which says
-    // nothing about which field disagreed. Catch it here instead.
+    // Sending a different note than the authorisation is bound to is CORDON_NOTE_MISMATCH on
+    // chain. Catch it before the user pays for the transaction.
     expect(() => encodeGateCalldata(direct, { noteId: "0x9" })).toThrow(OperationError);
     expect(() => encodeGateCalldata(fund, { noteId: "0x1" })).toThrow(/note id must be zero/);
   });
@@ -463,7 +487,7 @@ describe("the withdraw amount cannot disagree with the signed amount", () => {
     const actions = buildDirectActions({ authorization: direct, payee: PAYEE_ADDRESS });
     const withdrawn = BigInt((actions[0] as { amount: string }).amount);
     const signed = direct.payer.amount;
-    const encoded = BigInt(encodeSubjectAuthorization(direct.payer)[8] as string);
+    const encoded = BigInt(encodeSubjectAuthorization(direct.payer)[10] as string);
 
     expect(withdrawn).toBe(signed);
     expect(encoded).toBe(signed);

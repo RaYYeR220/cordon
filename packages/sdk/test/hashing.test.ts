@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   CREDENTIAL_TAG,
   LEG_TAGS,
+  NOTE_ANY,
   SUBJECT_ACTION_TAG,
   credentialHash,
   poseidon,
@@ -59,13 +60,14 @@ describe("action preimage coverage", () => {
     expect(subjectActionHash({ ...SUBJECT_ACTION_FIXTURE, policyId: "PAY_KYC_L2_V1" })).not.toBe(
       base,
     );
-    expect(subjectActionHash({ ...SUBJECT_ACTION_FIXTURE, noteId: "note_1" })).not.toBe(base);
+    expect(subjectActionHash({ ...SUBJECT_ACTION_FIXTURE, noteBinding: "0x99" })).not.toBe(base);
+    expect(subjectActionHash({ ...SUBJECT_ACTION_FIXTURE, validUntil: 1 })).not.toBe(base);
     expect(subjectActionHash({ ...SUBJECT_ACTION_FIXTURE, token: "0x1234" })).not.toBe(base);
     expect(subjectActionHash({ ...SUBJECT_ACTION_FIXTURE, amount: 401 })).not.toBe(base);
     expect(subjectActionHash({ ...SUBJECT_ACTION_FIXTURE, nonce: "nonce_1" })).not.toBe(base);
   });
 
-  it("moves when the leg or the settlement terms move, which is what :V3 exists for", () => {
+  it("moves when the leg or the settlement terms move, which is what :V3 added", () => {
     // Under :V2 these two were outside the message, so one signature authorised a Direct payment
     // and a Fund into an escrow whose terms the payer never saw — one nonce, one legitimate use.
     expect(subjectActionHash({ ...SUBJECT_ACTION_FIXTURE, leg: "Direct" })).not.toBe(base);
@@ -74,9 +76,16 @@ describe("action preimage coverage", () => {
     expect(subjectActionHash({ ...SUBJECT_ACTION_FIXTURE, poolAddress: "0x1234" })).not.toBe(base);
   });
 
+  it("moves when the destination or the deadline moves, which is what :V4 added", () => {
+    // Without the destination in the message, a claim lifted out of a reverted transaction's
+    // calldata could be resubmitted into anyone's note and every check would still pass.
+    expect(subjectActionHash({ ...SUBJECT_ACTION_FIXTURE, noteBinding: NOTE_ANY })).not.toBe(base);
+    expect(subjectActionHash({ ...SUBJECT_ACTION_FIXTURE, validUntil: 0 })).not.toBe(base);
+  });
+
   it("binds the chain, the gate and the pool, tag first", () => {
     const preimage = subjectActionPreimage(SUBJECT_ACTION_FIXTURE);
-    expect(preimage).toHaveLength(11);
+    expect(preimage).toHaveLength(12);
     expect(preimage[1]).toBe("0x534e5f4d41494e");
     expect(preimage[2]).toBe("0x2c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de001");
     expect(preimage[3]).toBe("0x900100c0011ea1100c0011ea1100c0011ea1100c0011ea1100c0011ea11002");

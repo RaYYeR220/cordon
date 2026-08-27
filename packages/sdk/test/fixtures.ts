@@ -52,19 +52,24 @@ export const SETTLEMENT_TERMS_FIXTURE: SettlementTermsHashInput = {
   expiresAt: 1_800_007_200,
 };
 
-/** The `:V3` action fixture: a `Fund` leg, matching `fixture_action_hash` in the Cairo suite. */
+/** The `:V4` action fixture: a `Fund` leg, matching `fixture_action_hash` in the Cairo suite. */
 export const SUBJECT_ACTION_FIXTURE: SubjectActionHashInput = {
   chainId: "SN_MAIN",
   gateAddress: FIXTURE_GATE,
   poolAddress: FIXTURE_POOL,
   leg: "Fund",
   policyId: "PAY_ACCREDITED_V1",
-  noteId: 0,
+  noteBinding: 0,
+  validUntil: 1_800_000_300,
   token: STRK,
   amount: 400,
   nonce: "nonce_0",
   termsHash: settlementTermsHash(SETTLEMENT_TERMS_FIXTURE),
 };
+
+/** A resolved open note id, standing in for what a wallet's prepare would return. */
+export const RESOLVED_NOTE_ID =
+  "0x03f1a5c8b27e94d06a1c3e5f7b9d208642ac1fe3d5079b8c4a6e2f0d1b3c5a79";
 
 /**
  * A fixed issuer key. A test key and nothing else — it is in a public repository, so anything it

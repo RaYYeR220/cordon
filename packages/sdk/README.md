@@ -24,11 +24,10 @@ npm install @cordon/sdk starknet
 
 ```ts
 import {
-  authorizeDirect,
-  buildDirectActions,
   decodeRefusalFromError,
   fetchGateContext,
   generateSubjectKeypair,
+  prepareDirect,
 } from "@cordon/sdk";
 
 // 1. A pseudonym, generated locally. This is never a wallet address.
@@ -39,24 +38,26 @@ const subject = generateSubjectKeypair();
 // 3. Read the chain id and the pool from the chain. Never from a config file — see below.
 const context = await fetchGateContext(provider, GATE_ADDRESS);
 
-// 4. Authorise exactly one settlement, for exactly one amount.
-const payment = authorizeDirect(
-  {
-    context,
-    token: STRK,
-    policyId: "PAY_ACCREDITED_V1",
-    credential,
-    amount: 400_000000000000000000n,
-    noteId: resolvedNoteId,   // see "The note id" below
-  },
-  subject.privateKey,
-);
-
-// 5. Build the transaction. There is no `amount` here: it comes from the signed authorisation.
-const actions = buildDirectActions({ authorization: payment, payee: PAYEE_ADDRESS });
+// 4. Sign and prepare. This runs the two prepares, learns the note id the wallet will
+//    substitute, and binds the authorisation to it.
+const prepare = (actions) => wallet.strk20PrepareInvoke({ actions });
 
 try {
-  await wallet.strk20InvokeTransaction({ actions });
+  const { call, proof } = await prepareDirect(
+    {
+      prepare,
+      context,
+      token: STRK,
+      policyId: "PAY_ACCREDITED_V1",
+      credential,
+      amount: 400_000000000000000000n,
+      payee: PAYEE_ADDRESS,
+    },
+    subject.privateKey,
+  );
+
+  // 5. Submit the resolved call the wallet gave back.
+  await wallet.strk20SubmitInvoke({ call, proof });
 } catch (error) {
   // 6. The refusal is the product.
   const refusal = decodeRefusalFromError(error);
@@ -83,23 +84,19 @@ requires a payee credential can only be satisfied by the payee authenticating th
 their own key, in their own transaction, at the moment they take the money. A settlement names the
 payee, so only that pseudonym can claim it. `Refund` closes the loop after the claim window shuts.
 
-Every leg is two calls: sign it, then build the transaction from what you signed.
+One call per leg, each running the whole flow:
 
 ```ts
-const payment  = authorizeDirect({ context, token, policyId, credential, amount, noteId }, key);
-const escrow   = authorizeFund({ context, token, policyId, credential, amount,
-                                 payeeSubjectKey, payeeClaimPolicyId, expiresAt }, key);
-const taking   = authorizeClaim({ context, settlement, settlementId, credential, noteId }, key);
-const takeBack = authorizeRefund({ context, settlement, settlementId, noteId }, key);
-
-buildDirectActions({ authorization: payment, payee });
-buildFundActions({ authorization: escrow });
-buildClaimActions({ authorization: taking, recipient });
-buildRefundActions({ authorization: takeBack, recipient });
+await prepareDirect({ prepare, context, token, policyId, credential, amount, payee }, key);
+await prepareFund({ prepare, context, token, policyId, credential, amount,
+                    payeeSubjectKey, payeeClaimPolicyId, expiresAt }, key);
+await prepareClaim({ prepare, context, settlement, settlementId, credential, recipient }, key);
+await prepareRefund({ prepare, context, settlement, settlementId, recipient }, key);
 ```
 
-`encodeGateCalldata(authorization)` gives you just the flat felt array for the `invoke` action, if
-you are assembling the transaction yourself.
+Each returns `{ authorization, actions, call, proof, noteId }`. Underneath sit `authorizeDirect`,
+`buildDirectActions` and friends, for callers driving the wallet themselves;
+`encodeGateCalldata(authorization)` gives just the flat felt array for the `invoke` action.
 
 ## The amount is written once, on purpose
 
@@ -187,21 +184,21 @@ zeros** — `DIRECT_TERMS_HASH` is exported so you never have to remember that.
 ### `subject_action_hash` — what a subject signs
 
 ```text
-poseidon(['CORDON_SUBJECT_ACTION:V3', chain_id, gate_address, pool_address, leg,
-          policy_id, note_id, token, amount, nonce, terms_hash])
+poseidon(['CORDON_SUBJECT_ACTION:V4', chain_id, gate_address, pool_address, leg,
+          policy_id, note_binding, valid_until, token, amount, nonce, terms_hash])
 ```
 
-Eleven elements, bound tightly, because it says "move this exact value, here, once". One preimage
-serves all four legs:
+Twelve elements, bound tightly, because it says "move this exact value, here, into this note,
+once". One preimage serves all four legs:
 
-| Leg | Signer | `policyId` | `noteId` | `amount` | `termsHash` |
+| Leg | Signer | `policyId` | `noteBinding` | `amount` | `termsHash` |
 | --- | --- | --- | --- | --- | --- |
-| `Direct` | payer | the payer policy | the resolved open note id | what the pool withdrew | `0` |
-| `Fund` | payer | the payer policy | `FUND_NOTE_ID` (zero) | what the pool withdrew | all four terms |
-| `Claim` | payee | the settlement's `payeeClaimPolicyId` | the payee's own note id | the settlement's amount | the id, rest zero |
-| `Refund` | payer | the settlement's `payerPolicyId` | the payer's own note id | the settlement's amount | the id, rest zero |
+| `Direct` | payer | the payer policy | the resolved note id, or `NOTE_ANY` | what the pool withdrew | `0` |
+| `Fund` | payer | the payer policy | zero — no note, and `NOTE_ANY` is refused | what the pool withdrew | all four terms |
+| `Claim` | payee | the settlement's `payeeClaimPolicyId` | the payee's resolved note id, or `NOTE_ANY` | the settlement's amount | the id, rest zero |
+| `Refund` | payer | the settlement's `payerPolicyId` | the payer's resolved note id, or `NOTE_ANY` | the settlement's amount | the id, rest zero |
 
-The `authorize*` functions fill this table for you, and `authorizeClaim`/`authorizeRefund` take the
+The `prepare*` functions fill this table for you, and `prepareClaim`/`prepareRefund` take the
 `Settlement` record itself rather than loose fields, so a claim cannot be signed for the wrong
 amount or judged against the wrong policy.
 
@@ -214,20 +211,93 @@ signed a `Direct` payment into their own note had — same signature, same nonce
 legitimate use — also authorised a `Fund` parking that money in an escrow whose id, payee, claim
 policy and expiry were chosen by whoever assembled the transaction. `:V3` fixes the message.
 
+`:V4` then added the note binding and `valid_until`, for the reason in
+[Where a payment is allowed to land](#where-a-payment-is-allowed-to-land).
+
 ### Nonces are global to the gate, not per leg
 
 **A nonce is single-use across all four legs.** One registry keyed by `(subject_public_key, nonce)`
 serves `Direct`, `Fund`, `Claim` and `Refund` alike. Never reuse one, even for a different leg. The
 `authorize*` functions draw a fresh 128-bit nonce unless you pass one.
 
-### The note id
+### Where a payment is allowed to land
 
-The subject signs the *resolved* note id, not the `"${openNoteIds[0]}"` placeholder: the wallet
-substitutes the placeholder in the calldata, but the gate hashes what it actually received. Your app
-therefore needs the resolved id **before** it asks the subject to sign. On a `Fund` there is no open
-note at all and the signed value is `FUND_NOTE_ID` (zero) — the SDK sends zero in the calldata too,
-so the two always agree, and `encodeGateCalldata` refuses a note id override that disagrees with
-what was signed.
+Every authorisation names the open note it may fill, and the gate checks the transaction fills that
+note. That is what makes a leaked authorisation worthless: a thief cannot create a note with someone
+else's id, because a note id commits to its owner's channel key.
+
+It matters because authorisations leak without anyone needing a privileged position. **A reverted
+transaction is included on Starknet with its full calldata, and a revert does not burn the nonce** —
+so a claim that fails for an ordinary reason (the window closed, an over-velocity refusal, too
+little shielded balance for the pool fee) publishes a still-valid authorisation to the whole chain.
+Without a destination in the message, anyone could resubmit it into a note of their own, and the
+credential, the signature and the payee key would all still check out.
+
+The complication is that the signer cannot compute the note id: the application submits the literal
+`"${openNoteIds[0]}"` and the *wallet* substitutes the resolved felt, which commits to the wallet's
+private key. Hence the prepare-twice flow below. On a `Fund` there is no note at all and the binding
+is always zero.
+
+### The prepare-twice flow
+
+`strk20PrepareInvoke` returns a **fully resolved** Starknet `Call`, so the substituted note id is
+sitting in `call.calldata`. The flow is:
+
+1. prepare once with a throwaway authorisation, to learn the note id;
+2. sign the real authorisation bound to that id;
+3. prepare again with the real signature, and submit that.
+
+`prepareDirect`, `prepareClaim` and `prepareRefund` do all three. Give them the wallet's prepare as
+a plain function:
+
+```ts
+const prepare: Strk20Prepare = (actions) => wallet.strk20PrepareInvoke({ actions });
+```
+
+The id is stable across the round trip because none of its inputs depend on the invoke calldata —
+only the channel key, the token and the note index. If another transaction lands on the same channel
+in between, the index moves, the second prepare yields a different id, and the SDK throws
+`NoteDriftError` rather than submitting something that would pay the wrong party. Retry the flow to
+sign for the new note.
+
+The throwaway first pass never escapes: it is bound to a placeholder note and dated to the unix
+epoch, so even if it leaked it is dead on arrival.
+
+`readResolvedNoteId(prepared)` is the same extraction on its own, for callers driving the wallet
+themselves. The note id is the last felt of the gate's calldata — `privacy_invoke(operation, token,
+pool_address, note_id)` — so the position is known rather than guessed.
+
+### If the wallet cannot resolve calldata
+
+A wallet that returns the unsubstituted placeholder, or no calldata at all, cannot support a bound
+authorisation. The SDK throws `NotePreparationError` and says so. **It never falls back to
+`NOTE_ANY`**, and neither should you on a failed prepare: a failure to prepare is a condition to
+report, not a reason to weaken what the subject signs.
+
+### Opting out of the binding
+
+For flows where the resolved id genuinely cannot be obtained before signing, there is exactly one
+way to give the binding up, and it is named for what it does:
+
+```ts
+import { acceptAnyNoteAndAllowRedirection, authorizeClaim } from "@cordon/sdk";
+
+const binding = acceptAnyNoteAndAllowRedirection({
+  validUntil: Math.floor(Date.now() / 1000) + 120,   // mandatory, and at most 600s out
+});
+
+const taking = authorizeClaim({ context, settlement, settlementId, credential, binding }, key);
+```
+
+There is no boolean flag, no options-bag default, and no `prepare*` path that reaches it. The gate
+charges for it: the deadline is mandatory and cannot be more than `MAX_UNBOUND_WINDOW_SECONDS` (600)
+out, which turns "redirectable until the nonce burns" — forever, for a reverted transaction — into a
+window an attacker has to already be watching for. The SDK enforces both limits before signing, so
+you get a `NoteBindingError` rather than a `CORDON_NEEDS_DEADLINE` or `CORDON_WINDOW_TOO_LONG`
+revert.
+
+The choice is inside the signed message, so a subject can see which one they made.
+`describeBinding(binding)` renders it for a confirmation screen.
 
 ## Settlement ids must be random
 
@@ -335,8 +405,10 @@ So `test/conformance.test.ts` does three things on every run:
    `contracts/src/tests/test_hashing.cairo`.
 2. Reads those same vectors back out of the Cairo source and recomputes them here, so the two sides
    cannot drift apart without a failure.
-3. Reads the domain tags and the four leg tags out of `contracts/src/hashing.cairo`, because a tag
-   version bump is exactly the change that produces silently unverifiable signatures.
+3. Reads the domain tags, the four leg tags, the `NOTE_ANY` sentinel and the 600-second unbound
+   window out of the Cairo, because a tag version bump is exactly the change that produces silently
+   unverifiable signatures — and a drifted window would mean refusing here what the chain accepts,
+   or worse, the reverse.
 
 The current pins:
 
@@ -344,7 +416,7 @@ The current pins:
 | --- | --- |
 | `credential_hash` | `0x33416da028165a7c7d2799315f717493f4ffe5379a4f1efe7fb85e1244db1b5` |
 | `settlement_terms_hash` | `0x4d1dba11f958448bb5b3d4b7e39ebba33b79ca80ea191539bc1868a628f7d3d` |
-| `subject_action_hash` | `0x699b15a2d12d1e8df2bc0aaafd30dfdf1eb8b48380496855dc89b85ada49c83` |
+| `subject_action_hash` | `0x15954b6b284f2575533fda03c443131d11a5217061cf1cae05b5055af9c6a22` |
 
 `npm run vectors` prints the full felt tables for all three, ready to paste into a Cairo test.
 
@@ -360,7 +432,9 @@ the payee are not.
 | Area | Exports |
 | --- | --- |
 | Field elements | `toFelt` `toBigInt` `toAddress` `shortStringToFelt` `feltToShortString` `feltEquals` `isFelt` `padFelt` `toU64Felt` `toU128Felt` `randomFelt` |
-| Hashing | `credentialHash` `settlementTermsHash` `quotedSettlementHash` `subjectActionHash` `*Preimage` `poseidon` `DOMAIN_TAGS` `LEG_TAGS` `DIRECT_TERMS_HASH` `CREDENTIAL_TAG` `SUBJECT_ACTION_TAG` `SETTLEMENT_TERMS_TAG` |
+| Hashing | `credentialHash` `settlementTermsHash` `quotedSettlementHash` `subjectActionHash` `*Preimage` `poseidon` `DOMAIN_TAGS` `LEG_TAGS` `DIRECT_TERMS_HASH` `NOTE_ANY` `MAX_UNBOUND_WINDOW_SECONDS` `CREDENTIAL_TAG` `SUBJECT_ACTION_TAG` `SETTLEMENT_TERMS_TAG` |
+| Note bindings | `bindToNote` `acceptAnyNoteAndAllowRedirection` `fundBinding` `bindingFelt` `isUnbound` `describeBinding` |
+| Prepare | `prepareDirect` `prepareFund` `prepareClaim` `prepareRefund` `readResolvedNoteId` `NotePreparationError` `NoteDriftError` |
 | Context | `fetchGateContext` `assertGateContext` `createGateContext` `GateContextError` |
 | Keys | `generateSubjectKeypair` `deriveSubjectKeypair` `subjectKeyTypedData` `subjectKeyMessageHash` `subjectPublicKey` `signHash` `verifyHash` `signCredential` `verifyCredentialSignature` `signSubjectAction` `verifySubjectAction` `randomNonce` |
 | Credentials | `issueCredential` `createCredential` `validateCredential` `summarizeCredential` `credentialToJson` `credentialFromJson` `credentialCalldata` `credentialFromCalldata` `encodeCredential` `decodeCredential` `credentialUri` |
