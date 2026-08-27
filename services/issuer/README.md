@@ -88,7 +88,7 @@ fetched 2026-08-26T21:20:11.029Z
 
 | Method | Path | What it does |
 | --- | --- | --- |
-| `GET` | `/issuer` | The issuer id and the public key a registry owner needs for `register_issuer` |
+| `GET` | `/issuer` | The four arguments a registry owner needs for `register_issuer` |
 | `GET` | `/health` | Whether the sanctions snapshot is fresh enough to issue against. 503 when it is not |
 | `POST` | `/credentials` | Screen an address, then sign or refuse |
 | `GET` | `/credentials` | Every credential issued, with the screening that justified it |
@@ -162,18 +162,31 @@ Poseidon preimage `PolicyGate` verifies against and signs it with the STARK curv
 contains no hash function of its own — reimplementing one would be the single most likely way to
 produce credentials the chain refuses as `CORDON_BAD_CRED` with no explanation.
 
-To put this issuer into service on chain, take the public key from `GET /issuer` and register it:
+To put this issuer into service on chain, take the four arguments from `GET /issuer` and register
+it. The response includes them under `registerIssuer`, in order:
 
 ```cairo
-IssuerRegistry::register_issuer('CORDON_OFAC', <publicKey>, "https://…/issuer.json")
+IssuerRegistry::register_issuer(
+    'CORDON_OFAC',              // issuer_id
+    <publicKey>,                // the key this service signs with
+    <operator>,                 // ISSUER_OPERATOR_ADDRESS
+    "https://…/issuer.json",    // metadata_uri
+)
 ```
 
-Then publish a policy that requires the claim:
+**The operator matters.** It is the only address that may revoke this issuer's credentials — not
+even the registry owner can — and the only one that may hand the role on. It is a wallet you
+control, not this service: revocation is an on-chain transaction, and this service holds an
+attesting key, not an account. Register without one and nobody can ever withdraw an attestation;
+`GET /issuer` warns when `ISSUER_OPERATOR_ADDRESS` is unset.
+
+Then publish a policy that requires the claim, pinned to the token you intend to settle:
 
 ```cairo
 PolicyRegistry::publish_policy('PAY_CLEAN_V1', Policy {
     required_claim: 'NOT_SANCTIONED',
     issuer_id: 'CORDON_OFAC',
+    token: STRK,
     ..
 })
 ```
@@ -182,8 +195,9 @@ PolicyRegistry::publish_policy('PAY_CLEAN_V1', Policy {
 
 `POST /credentials/:id/revoke` records the issuer's decision and requires a reason — a revocation
 without one is unauditable. It does **not**, on its own, stop the credential settling: the gate
-reads the on-chain `RevocationRegistry`, so the operator still has to call `revoke` there. The
-response says so explicitly rather than implying the credential is already dead everywhere.
+reads the on-chain `RevocationRegistry`, so the registered operator still has to call `revoke`
+there, from the address `register_issuer` recorded. The response names that address rather than
+implying the credential is already dead everywhere.
 
 ## Key handling
 

@@ -49,6 +49,7 @@ export function buildServer(dependencies: Dependencies): FastifyInstance {
     issuerId: config.issuerId,
     issuerPrivateKey: config.issuerPrivateKey,
     metadataUri: config.issuerMetadataUri,
+    operator: config.issuerOperator,
   });
 
   /**
@@ -61,6 +62,13 @@ export function buildServer(dependencies: Dependencies): FastifyInstance {
     ...identity,
     credentialValiditySeconds: config.credentialValiditySeconds,
     sources: config.ofacSources,
+    ...(identity.operator === ""
+      ? {
+          warning:
+            "ISSUER_OPERATOR_ADDRESS is not set, so register_issuer has no operator to record. " +
+            "Without one, nobody can revoke this issuer's credentials on chain.",
+        }
+      : {}),
   }));
 
   /**
@@ -229,7 +237,10 @@ export function buildServer(dependencies: Dependencies): FastifyInstance {
         pending: true,
         message:
           "Recorded here. The gate reads the on-chain RevocationRegistry, so call " +
-          `revoke(${identity.issuerId}, ${parsed.value}) there to make this bite.`,
+          `revoke(${identity.issuerId}, ${parsed.value}) there to make this bite` +
+          (identity.operator === ""
+            ? ", from the address registered as this issuer's operator."
+            : `, from the operator address ${identity.operator}.`),
       },
     };
   });

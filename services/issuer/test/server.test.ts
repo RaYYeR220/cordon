@@ -22,6 +22,7 @@ import {
   LISTED_ETH,
   SUBJECT_PUBLIC_KEY,
   TEST_ISSUER_PRIVATE_KEY,
+  TEST_OPERATOR_ADDRESS,
   failingFetch,
   fixtureFetch,
   fixtureXml,
@@ -79,6 +80,29 @@ describe("GET /issuer", () => {
     expect(body.issuerName).toBe("CORDON_OFAC");
     expect(body.claim).toBe("NOT_SANCTIONED");
     expect(JSON.stringify(body)).not.toContain(config.issuerPrivateKey);
+  });
+
+  it("gives register_issuer its four arguments, operator included", () => {
+    // IssuerRegistry::register_issuer(issuer_id, public_key, operator, metadata_uri). The operator
+    // is the only address that can ever revoke this issuer's credentials, so omitting it would
+    // register an issuer nobody can withdraw an attestation from.
+    return start().then(async ({ app }) => {
+      const body = (await app.inject({ method: "GET", url: "/issuer" })).json();
+      expect(body.registerIssuer).toEqual({
+        issuerId: "0x434f52444f4e5f4f464143",
+        publicKey: subjectPublicKey(TEST_ISSUER_PRIVATE_KEY),
+        operator: TEST_OPERATOR_ADDRESS,
+        metadataUri: "https://cordon.test/issuer.json",
+      });
+      expect(body.warning).toBeUndefined();
+    });
+  });
+
+  it("warns when no operator is configured, rather than registering an unrevokable issuer", async () => {
+    const { app } = await start({ config: { issuerOperator: "" } });
+    const body = (await app.inject({ method: "GET", url: "/issuer" })).json();
+    expect(body.registerIssuer.operator).toBe("");
+    expect(body.warning).toContain("revoke");
   });
 });
 
@@ -316,6 +340,7 @@ describe("revocation", () => {
     expect(body.credential.revocationReason).toBe("subject appeared on a later list");
     expect(body.onChain.pending).toBe(true);
     expect(body.onChain.message).toContain("RevocationRegistry");
+    expect(body.onChain.message).toContain(TEST_OPERATOR_ADDRESS);
   });
 
   it("requires a reason, so the record is auditable", async () => {

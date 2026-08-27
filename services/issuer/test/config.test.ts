@@ -35,6 +35,18 @@ describe("loading configuration", () => {
     ).toEqual(["https://a.test/x.xml", "https://b.test/y.xml"]);
   });
 
+  it("reads the operator address register_issuer records", () => {
+    const operator = "0x0499b3f4c88a4b6d2e1a7c0f5e9d8a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7";
+    expect(loadConfig({ ...minimal, ISSUER_OPERATOR_ADDRESS: operator }).issuerOperator).toBe(
+      operator,
+    );
+    expect(loadConfig(minimal).issuerOperator).toBe("");
+  });
+
+  it("refuses an operator that is not an address, rather than registering a broken issuer", () => {
+    expect(() => loadConfig({ ...minimal, ISSUER_OPERATOR_ADDRESS: "me" })).toThrow(ConfigError);
+  });
+
   it("refuses a nonsense numeric setting instead of silently using a default", () => {
     expect(() => loadConfig({ ...minimal, PORT: "eighty" })).toThrow(ConfigError);
     expect(() => loadConfig({ ...minimal, OFAC_MAX_AGE_SECONDS: "0" })).toThrow(ConfigError);

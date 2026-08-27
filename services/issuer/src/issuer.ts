@@ -98,6 +98,18 @@ export interface IssuerIdentity {
   claim: string;
   /** Off-chain metadata: who runs it, what it screens, how to reach it. */
   metadataUri: string;
+  /**
+   * The address that will hold the operator role: the only one that may revoke this issuer's
+   * credentials on chain, and the only one that may pass the role on.
+   */
+  operator: string;
+  /** The four arguments `IssuerRegistry::register_issuer` takes, in order. */
+  registerIssuer: {
+    issuerId: string;
+    publicKey: string;
+    operator: string;
+    metadataUri: string;
+  };
 }
 
 /** Derive the issuer's public identity from its configuration. */
@@ -105,13 +117,22 @@ export function issuerIdentity(options: {
   issuerId: Felt;
   issuerPrivateKey: Felt;
   metadataUri: string;
+  operator: string;
 }): IssuerIdentity {
+  const publicKey = subjectPublicKey(options.issuerPrivateKey);
   return {
     issuerId: options.issuerId,
     issuerName: feltToShortString(options.issuerId),
-    publicKey: subjectPublicKey(options.issuerPrivateKey),
+    publicKey,
     claim: NOT_SANCTIONED,
     metadataUri: options.metadataUri,
+    operator: options.operator,
+    registerIssuer: {
+      issuerId: options.issuerId,
+      publicKey,
+      operator: options.operator,
+      metadataUri: options.metadataUri,
+    },
   };
 }
 

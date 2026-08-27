@@ -26,6 +26,15 @@ export interface Config {
   issuerPrivateKey: Felt;
   /** Off-chain metadata about the issuer: who runs it, what it screens, how to reach it. */
   issuerMetadataUri: string;
+  /**
+   * The address `register_issuer` should record as this issuer's operator.
+   *
+   * The operator is the only address that may revoke this issuer's credentials, and the only one
+   * that may hand the role on — not even the registry owner can. It is a Starknet account, not
+   * this service: revocation is an on-chain transaction, and this service holds an attesting key,
+   * not a wallet.
+   */
+  issuerOperator: string;
   /** Bearer token guarding revocation and forced refreshes. Empty means those routes are open. */
   adminToken: string;
   /** Where the OFAC lists are fetched from. */
@@ -78,6 +87,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     issuerId: toFelt(env["ISSUER_ID"] ?? "CORDON_OFAC"),
     issuerPrivateKey: toFelt(issuerPrivateKey.trim()),
     issuerMetadataUri: env["ISSUER_METADATA_URI"] ?? "",
+    issuerOperator: address(env, "ISSUER_OPERATOR_ADDRESS"),
     adminToken: env["ISSUER_ADMIN_TOKEN"] ?? "",
     ofacSources: list(env["OFAC_SOURCES"]) ?? [...DEFAULT_OFAC_SOURCES],
     ofacMaxAgeSeconds: integer(env, "OFAC_MAX_AGE_SECONDS", 86_400),
@@ -101,6 +111,7 @@ export function redactConfig(config: Config): Record<string, unknown> {
     port: config.port,
     issuerId: config.issuerId,
     issuerMetadataUri: config.issuerMetadataUri,
+    issuerOperator: config.issuerOperator,
     adminTokenSet: config.adminToken.length > 0,
     ofacSources: config.ofacSources,
     ofacMaxAgeSeconds: config.ofacMaxAgeSeconds,
@@ -110,6 +121,16 @@ export function redactConfig(config: Config): Record<string, unknown> {
     credentialValiditySeconds: config.credentialValiditySeconds,
     logLevel: config.logLevel,
   };
+}
+
+function address(env: NodeJS.ProcessEnv, name: string): string {
+  const raw = env[name];
+  if (raw === undefined || raw.trim() === "") return "";
+  const value = raw.trim();
+  if (!/^0x[0-9a-fA-F]{1,64}$/.test(value)) {
+    throw new ConfigError(`${name} must be a 0x-prefixed Starknet address, got ${JSON.stringify(raw)}`);
+  }
+  return value;
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {

@@ -36,6 +36,10 @@ export const LISTED_STARKNET_UNPADDED =
 /** An address no list carries. */
 export const CLEAN_ADDRESS = "0x0511f0e5d0ce2b0b1e1a3d4c5b6a79887766554433221100ffeeddccbbaa9988";
 
+/** The address the tests register as the issuer's operator. */
+export const TEST_OPERATOR_ADDRESS =
+  "0x0499b3f4c88a4b6d2e1a7c0f5e9d8a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7";
+
 /** A subject pseudonym for request bodies. */
 export const SUBJECT_PUBLIC_KEY =
   "0x1ce8adcb0d0e5e0d0a3e2b8b8f9e5c3b2a1908070605040302010f0e0d0c0b0";
@@ -79,6 +83,7 @@ export function testConfig(directory: string, overrides: Partial<Config> = {}): 
     issuerId: "0x434f52444f4e5f4f464143",
     issuerPrivateKey: TEST_ISSUER_PRIVATE_KEY,
     issuerMetadataUri: "https://cordon.test/issuer.json",
+    issuerOperator: TEST_OPERATOR_ADDRESS,
     adminToken: "",
     ofacSources: ["https://ofac.test/sdn.xml"],
     ofacMaxAgeSeconds: 86_400,
