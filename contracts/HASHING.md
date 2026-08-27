@@ -24,7 +24,7 @@ the code without a test failing.
 - **Field widening**: `u64` and `u128` values are widened to `felt252` unchanged;
   a `ContractAddress` is its felt value. No packing, no offsets, no length prefix.
 - **Short strings**: `'ACCREDITED'` is the ASCII bytes read big-endian as an integer, the standard
-  Cairo short-string encoding (`encodeShortString` in `starknet`).
+  Cairo short-string encoding (`shortString.encodeShortString` in `starknet`).
 
 ## Domain-separation tags
 
@@ -230,17 +230,17 @@ subject_action_hash = 0x699b15a2d12d1e8df2bc0aaafd30dfdf1eb8b48380496855dc89b85a
 ## Reproducing it in TypeScript
 
 ```ts
-import { ec, encodeShortString, hash, num } from "starknet";
+import { ec, hash, num, shortString } from "starknet";
 
-const CREDENTIAL_TAG = encodeShortString("CORDON_CREDENTIAL:V1");
-const SUBJECT_ACTION_TAG = encodeShortString("CORDON_SUBJECT_ACTION:V3");
-const SETTLEMENT_TERMS_TAG = encodeShortString("CORDON_SETTLEMENT_TERMS:V1");
+const CREDENTIAL_TAG = shortString.encodeShortString("CORDON_CREDENTIAL:V1");
+const SUBJECT_ACTION_TAG = shortString.encodeShortString("CORDON_SUBJECT_ACTION:V3");
+const SETTLEMENT_TERMS_TAG = shortString.encodeShortString("CORDON_SETTLEMENT_TERMS:V1");
 
 export const LEG = {
-  direct: encodeShortString("CORDON_LEG_DIRECT"),
-  fund: encodeShortString("CORDON_LEG_FUND"),
-  claim: encodeShortString("CORDON_LEG_CLAIM"),
-  refund: encodeShortString("CORDON_LEG_REFUND"),
+  direct: shortString.encodeShortString("CORDON_LEG_DIRECT"),
+  fund: shortString.encodeShortString("CORDON_LEG_FUND"),
+  claim: shortString.encodeShortString("CORDON_LEG_CLAIM"),
+  refund: shortString.encodeShortString("CORDON_LEG_REFUND"),
 } as const;
 
 export function credentialHash(c: {
