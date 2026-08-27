@@ -125,8 +125,11 @@ export interface UseGatedPaymentOptions {
   /**
    * The **resolved** open-note id the subject signs over. A literal, or a function that resolves
    * one at build time. Not needed on the `fund` leg.
+   *
+   * A resolver may return `null` to say it could not find one; the payment then fails with that
+   * said plainly rather than signing a value it made up.
    */
-  noteId?: FeltLike | (() => FeltLike | Promise<FeltLike>) | null;
+  noteId?: FeltLike | (() => FeltLike | null | Promise<FeltLike | null>) | null;
   /** Names the escrow. Required for `fund`, `claim` and `refund`. */
   settlementId?: FeltLike | null;
   /** The policy a claimant will have to satisfy. Required for `fund`. */
@@ -179,8 +182,26 @@ export interface UseGatedPayment {
   reset: () => void;
 }
 
-function resolveAsync<T>(value: T | (() => T | Promise<T>)): Promise<T> {
-  return Promise.resolve(typeof value === "function" ? (value as () => T | Promise<T>)() : value);
+/**
+ * Resolve the note id, whether it was given as a literal or as a function.
+ *
+ * A resolver that comes back empty-handed is a hard stop, not something to paper over: signing a
+ * placeholder or a zero would buy a transaction that reverts with `CORDON_BAD_SUBJECT_SIG` after
+ * the pool has already charged its fee.
+ */
+async function resolveNoteId(
+  value: UseGatedPaymentOptions["noteId"],
+): Promise<Felt> {
+  const resolved = typeof value === "function" ? await value() : value;
+  if (resolved === null || resolved === undefined) {
+    throw new Error(
+      "No open-note id was resolved, so there is nothing for the subject to sign over. The " +
+        "wallet substitutes ${openNoteIds[0]} while it assembles the transaction, but the gate " +
+        "hashes the felt it received — supply the resolved id, or use the fund leg, which " +
+        "reserves no note.",
+    );
+  }
+  return toFelt(resolved);
 }
 
 export function useGatedPayment(options: UseGatedPaymentOptions = {}): UseGatedPayment {
@@ -329,10 +350,7 @@ export function useGatedPayment(options: UseGatedPaymentOptions = {}): UseGatedP
         if (currentLeg === "direct" || currentLeg === "fund") {
           amount = current.amount ?? 0n;
           policyId = toFelt(current.policyId ?? 0);
-          noteId =
-            currentLeg === "fund"
-              ? FUND_NOTE_ID
-              : toFelt(await resolveAsync(current.noteId as FeltLike));
+          noteId = currentLeg === "fund" ? FUND_NOTE_ID : await resolveNoteId(current.noteId);
         } else {
           const settlement = await readSettlement(
             provider,
@@ -348,7 +366,7 @@ export function useGatedPayment(options: UseGatedPaymentOptions = {}): UseGatedP
             currentLeg === "claim"
               ? settlement.value.payeeClaimPolicyId
               : settlement.value.payerPolicyId;
-          noteId = toFelt(await resolveAsync(current.noteId as FeltLike));
+          noteId = await resolveNoteId(current.noteId);
         }
 
         // Pre-flight. Every check that cannot be run is reported as skipped rather than assumed to
