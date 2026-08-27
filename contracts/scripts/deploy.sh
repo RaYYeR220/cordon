@@ -22,8 +22,14 @@ set -euo pipefail
 
 NETWORK="${1:-}"
 case "$NETWORK" in
-  mainnet) RPC="${STARKNET_RPC:-https://api.cartridge.gg/x/starknet/mainnet}" ;;
-  sepolia) RPC="${STARKNET_RPC:-https://api.cartridge.gg/x/starknet/sepolia}" ;;
+  mainnet)
+    RPC="${STARKNET_RPC:-https://api.cartridge.gg/x/starknet/mainnet}"
+    POOL="${STRK20_POOL:-0x040337b1af3c663e86e333bab5a4b28da8d4652a15a69beee2b677776ffe812a}"
+    ;;
+  sepolia)
+    RPC="${STARKNET_RPC:-https://api.cartridge.gg/x/starknet/sepolia}"
+    POOL="${STRK20_POOL:-0x0254a6b2997ef52e9f830ce1f543f6b29768295e8d17e2267d672c552cfe0d91}"
+    ;;
   *) echo "usage: $0 {mainnet|sepolia}" >&2; exit 2 ;;
 esac
 
@@ -40,7 +46,16 @@ mkdir -p "$OUT_DIR"
 echo "network : $NETWORK"
 echo "rpc     : $RPC"
 echo "owner   : $OWNER"
+echo "pool    : $POOL"
 echo
+
+# The gate binds the pool at construction: only this address may drive privacy_invoke, and it is
+# the only address the gate will ever approve. Deploying against the wrong pool produces a gate
+# that silently refuses every transaction, so confirm the address is a live contract first.
+if ! starkli class-hash-at "$POOL" --rpc "$RPC" >/dev/null 2>&1; then
+  echo "no contract deployed at pool address $POOL on $NETWORK" >&2
+  exit 1
+fi
 
 scarb build
 
@@ -84,14 +99,31 @@ echo "RevocationRegistry  $REVOCATION_REGISTRY"
 POLICY_REGISTRY="$(deploy "$POLICY_CLASS" "$OWNER")"
 echo "PolicyRegistry      $POLICY_REGISTRY"
 
-POLICY_GATE="$(deploy "$GATE_CLASS" "$OWNER" "$ISSUER_REGISTRY" "$REVOCATION_REGISTRY" "$POLICY_REGISTRY")"
+POLICY_GATE="$(deploy "$GATE_CLASS" "$OWNER" "$POOL" "$ISSUER_REGISTRY" "$REVOCATION_REGISTRY" "$POLICY_REGISTRY")"
 echo "PolicyGate          $POLICY_GATE"
+
+# The registry pointers and the pool are immutable after construction, so a wrong address here is
+# only fixable by redeploying. Read them back and fail loudly rather than recording a broken gate.
+echo
+echo "verifying the deployed gate..."
+for pair in "privacy_pool:$POOL" "issuer_registry:$ISSUER_REGISTRY" \
+            "revocation_registry:$REVOCATION_REGISTRY" "policy_registry:$POLICY_REGISTRY"; do
+  getter="${pair%%:*}"; expected="${pair#*:}"
+  actual="$(starkli call "$POLICY_GATE" "$getter" --rpc "$RPC" | tr -d '[]", \n')"
+  if [ "$(printf '%d' "$actual")" = "$(printf '%d' "$expected")" ]; then
+    echo "  ok   $getter"
+  else
+    echo "  FAIL $getter: gate reports $actual, expected $expected" >&2
+    exit 1
+  fi
+done
 
 cat > "$OUT" <<JSON
 {
   "network": "$NETWORK",
   "rpc": "$RPC",
   "owner": "$OWNER",
+  "strk20_pool": "$POOL",
   "classes": {
     "IssuerRegistry": "$ISSUER_CLASS",
     "RevocationRegistry": "$REVOCATION_CLASS",
