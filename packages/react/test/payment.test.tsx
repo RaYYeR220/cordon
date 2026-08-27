@@ -245,6 +245,42 @@ describe("everything that is not a refusal", () => {
   });
 });
 
+describe("the context every signature is bound to", () => {
+  it("refuses to sign against a pool the gate does not serve", async () => {
+    const chain = defaultChainState();
+    // A plausible-looking address in the config that is not the one the gate was constructed
+    // against. Every signature made against it would be refused with CORDON_BAD_POOL — after the
+    // user had paid for the transaction.
+    chain.pool = "0x0555555555555555555555555555555555555555555555555555555555555555";
+    render(<Harness chain={chain} amount={10n * ONE_STRK} />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Ready" }));
+    await waitFor(() => expect(screen.getByText("STRK20 ready")).toBeInTheDocument());
+
+    await waitFor(() =>
+      expect(screen.getByText(/CORDON_BAD_POOL/)).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: "Pay" })).toBeDisabled();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it("blocks when the gate will not say which pool it serves", async () => {
+    const chain = defaultChainState();
+    chain.poolError = new Error("CONTRACT_NOT_FOUND");
+    render(<Harness chain={chain} amount={10n * ONE_STRK} />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Ready" }));
+    await waitFor(() => expect(screen.getByText("STRK20 ready")).toBeInTheDocument());
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Pay" })).toBeDisabled(),
+    );
+    expect(screen.getByText(/could not read privacy_pool/)).toBeInTheDocument();
+  });
+});
+
 describe("the note id the subject has to sign over", () => {
   it("blocks the payment rather than signing a placeholder that would be refused", async () => {
     render(<Harness chain={defaultChainState()} amount={10n * ONE_STRK} noteId={null} />);

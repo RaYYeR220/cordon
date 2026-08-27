@@ -32,6 +32,12 @@ Only `gateAddress` is required. The pool, the token, the RPC and the chain defau
 deployment, and the three registries are read off the gate itself — it stores the addresses it
 trusts, so you do not have to.
 
+The provider also reads the chain id and `PolicyGate::privacy_pool()` before anything is signed.
+Both are inside every signed message, and both are easy to get wrong from configuration — a
+`chainId` default that is really Sepolia, or a pool address that is not the one the gate was
+constructed against. A mismatch blocks the payment with the reason named, rather than becoming a
+`CORDON_BAD_POOL` revert the user has already paid for.
+
 ## Three things to know before you wire this up
 
 **A refusal is not an error.** It is the product working. `useGatedPayment` gives it its own
@@ -332,6 +338,44 @@ await payment.pay();
 ```
 
 A copyable single-file version is in [`examples/minimal`](./examples/minimal).
+
+### Escrowed payments, when the payee must be credentialed too
+
+A payer cannot vouch for a payee. The gate never sees who the `transfer(OPEN)` credits, so a policy
+with `requirePayeeCredential` can only be satisfied by the payee authenticating themselves. That is
+the `fund` → `claim` pair: the payer clears their own policy, names the payee's pseudonym and parks
+the value; the payee presents their own credential, in their own private transaction, at the moment
+they take it. `refund` closes the loop once the window shuts.
+
+```tsx
+// The payer. No note id needed — a fund reserves no open note.
+<GatedPaymentButton
+  leg="fund"
+  policyId={POLICY}
+  amount={amount}
+  credential={payerCredential}
+  subjectPrivateKey={payerKey}
+  payeeSubjectKey={PAYEE_PSEUDONYM}     // only this pseudonym can claim
+  payeeClaimPolicyId={CLAIM_POLICY}     // what they will have to satisfy
+  expiresAt={Math.floor(Date.now() / 1000) + 86_400}
+/>
+
+// The payee, later, with their own key and their own credential.
+<GatedPaymentButton
+  leg="claim"
+  settlementId={settlementId}
+  credential={payeeCredential}
+  subjectPrivateKey={payeeKey}
+  recipient={PAYEE}
+  noteId={noteId}
+/>
+```
+
+Leave `settlementId` off the `fund` and the SDK generates a random one. That matters: an id is
+single-use forever and is the only handle in the event log, so a predictable one can be burned
+ahead of you by a stranger and ties the funding to the claim to whatever record it came from. An
+invoice number is refused outright. Read the generated id back from `payment.actions`, or from the
+`SettlementFunded` event in `<GateFeed>`.
 
 ## Honest limits
 
