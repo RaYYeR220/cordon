@@ -2,27 +2,35 @@
  * Gate operations: the four legs of `privacy_invoke`, their calldata and their action arrays.
  *
  * `PolicyGate::privacy_invoke(operation, token, pool_address, note_id)` takes a `GateOperation` as
- * its first argument, and each variant carries exactly the data its leg needs and nothing it does
- * not — so no caller ever passes a field the contract ignores.
+ * its first argument, and each variant carries exactly the data its leg needs.
  *
  * | Leg | Who signs | Action array | Returns |
  * | --- | --- | --- | --- |
  * | `Direct` | payer | `withdraw` → `transfer(OPEN)` → `invoke` | the payer's open note |
  * | `Fund` | payer | `withdraw` → `invoke` | an empty span: the value stays with the gate |
- * | `Claim` | **payee** | `transfer(OPEN, self)` → `invoke` | the payee's open note |
+ * | `Claim` | **the named payee** | `transfer(OPEN, self)` → `invoke` | the payee's open note |
  * | `Refund` | payer | `transfer(OPEN, self)` → `invoke` | the payer's open note |
  *
- * `Direct` is the whole product in one transaction. `Fund`/`Claim` exist because a payer cannot
- * vouch for a payee: the gate never sees who the `transfer(OPEN)` credits, so a policy with
- * `require_payee_credential` can only be satisfied by the payee authenticating themselves, in
- * their own transaction, at the moment they take the money. `Refund` is what stops escrowed value
- * being stranded when nobody claims.
+ * ## Why this module has no `amount` parameter on any builder
+ *
+ * The amount lives inside the signed authorisation — it is a field of `SubjectAuthorization` in the
+ * contract — and the gate settles exactly what was signed. So the `withdraw` action and the
+ * signature have to name the same number, and the consequences of them disagreeing are ugly and
+ * silent: withdrawing **more** than was signed leaves the difference behind as dust the payer
+ * cannot recover (see the known residual in `contracts/README.md`), and withdrawing **less** is
+ * refused with `CORDON_UNDERFUNDED` after the user has paid for the transaction.
+ *
+ * A comment warning about that would be worth very little. Instead the amount is written once, when
+ * the authorisation is signed, and every builder here reads it back off that authorisation. There
+ * is no second place to put a number, so the two cannot disagree. The same is true of the
+ * settlement terms, the token, the gate and the pool: an `authorize*` call is the only place any of
+ * them is stated, and the matching `build*Actions` call takes the result whole.
  *
  * ## Cairo enum encoding
  *
  * Cairo serialises an enum as its variant index followed by that variant's fields in declaration
- * order, and a struct as its fields in declaration order. Everything below follows from that:
- * no framing, no length prefix, no padding.
+ * order, and a struct as its fields in declaration order. Everything below follows from that: no
+ * framing, no length prefix, no padding.
  */
 
 import {
@@ -35,10 +43,31 @@ import {
   type CalldataItem,
   type Strk20Action,
 } from "./actions.js";
+import type { GateContext } from "./context.js";
 import { credentialCalldata, type Credential } from "./credential.js";
-import { toAddress, toFelt, toU64Felt, type Address, type Felt, type FeltLike } from "./felt.js";
-import { subjectActionHash } from "./hashing.js";
-import { signHash, type Signature } from "./keys.js";
+import {
+  feltEquals,
+  toAddress,
+  toFelt,
+  toU128Felt,
+  toU64Felt,
+  type Address,
+  type Felt,
+  type FeltLike,
+} from "./felt.js";
+import {
+  DIRECT_TERMS_HASH,
+  quotedSettlementHash,
+  settlementTermsHash,
+  subjectActionHash,
+  type Leg,
+} from "./hashing.js";
+import { randomNonce, signHash, type Signature } from "./keys.js";
+import {
+  assertUnguessableSettlementId,
+  randomSettlementId,
+  type Settlement,
+} from "./settlement.js";
 
 /**
  * Variant indices, in the order the Cairo enum declares them. These *are* the wire format — the
@@ -54,151 +83,462 @@ export const GATE_OPERATION_VARIANT = {
 /**
  * The note id a `Fund` signs and sends.
  *
- * A `Fund`'s action array is `withdraw → invoke`: there is no `transfer(OPEN)`, so there is no
- * note to fill and no note id to bind. Both the signature and the calldata carry zero.
+ * A `Fund`'s action array is `withdraw → invoke`: there is no `transfer(OPEN)`, so there is no note
+ * to fill and no note id to bind. Both the signature and the calldata carry zero, and the gate
+ * refuses anything else with `CORDON_NOTE_ID_NOT_ZERO`.
  */
 export const FUND_NOTE_ID: Felt = "0x0";
 
 /**
  * A subject proving, in one value, both who they are and that they authorised this settlement.
  *
- * The payer uses it on `Direct` and `Fund`; the payee uses the identical shape on `Claim`. One
- * type, because a payee check that drifted from a payer check would be a hole nobody notices.
+ * Mirrors the Cairo `SubjectAuthorization` field for field, `amount` included. The payer uses it on
+ * `Direct` and `Fund`; the payee uses the identical shape on `Claim`.
  */
 export interface SubjectAuthorization {
   /** The published policy to enforce against the credential. */
   policyId: Felt;
   /** The issuer-signed credential. */
   credential: Credential;
-  /** The subject's signature over {@link subjectActionHash}. */
+  /** The value this authorisation covers, in token base units. Authoritative. */
+  amount: bigint;
+  /** The subject's signature over the action hash. */
   signature: Signature;
   /** Subject-chosen, and single-use across every leg of the gate. */
   nonce: Felt;
 }
 
-/** Settle straight through to the payee's note. The common case. */
-export interface DirectOperation {
-  kind: "Direct";
+/** What every signed leg records about itself. */
+interface AuthorizationBase {
+  /** The chain, gate and pool this signature is bound to. */
+  context: GateContext;
+  /** The ERC20 being settled. */
+  token: Address;
+  /** The value the gate will move. */
+  amount: bigint;
+  /** The note id the signature covers. Zero on a `Fund`. */
+  noteId: Felt;
+  /** The action hash that was signed, for debugging a refusal. */
+  actionHash: Felt;
+  /** The terms hash inside the action hash. Zero on a `Direct`. */
+  termsHash: Felt;
+}
+
+/** A signed `Direct` payment, and everything it committed to. */
+export interface DirectAuthorization extends AuthorizationBase {
+  leg: "Direct";
+  /** The payer's authorisation, as the contract takes it. */
   payer: SubjectAuthorization;
 }
 
-/** Gate the value now, park it with the gate, and let a credentialed payee claim it later. */
-export interface FundOperation {
-  kind: "Fund";
-  /** The payer's own authorisation. The full payer policy is enforced on this leg. */
+/** A signed `Fund`, and the settlement terms the payer agreed to. */
+export interface FundAuthorization extends AuthorizationBase {
+  leg: "Fund";
   payer: SubjectAuthorization;
-  /** Chosen by the payer, and the handle both later legs quote. Claimed once, ever. */
-  settlementId: FeltLike;
-  /** The policy the payee will have to satisfy. Must already be published and active. */
-  payeeClaimPolicyId: FeltLike;
-  /** When the claim window closes and the refund window opens, in unix seconds. */
-  expiresAt: FeltLike;
+  /** The escrow's handle. Random, and the payee needs it to claim. */
+  settlementId: Felt;
+  /** The pseudonym allowed to claim. */
+  payeeSubjectKey: Felt;
+  /** The policy that payee must satisfy. */
+  payeeClaimPolicyId: Felt;
+  /** When the claim window closes, in unix seconds. */
+  expiresAt: number;
 }
 
-/** The payee taking a funded settlement, authenticated by their own key. */
-export interface ClaimOperation {
-  kind: "Claim";
-  /** Which settlement to take. */
-  settlementId: FeltLike;
-  /** The payee's credential, checked against the settlement's `payeeClaimPolicyId`. */
+/** A signed `Claim`, made by the payee the payer named. */
+export interface ClaimAuthorization extends AuthorizationBase {
+  leg: "Claim";
+  settlementId: Felt;
+  /** The payee's credential. Its subject key must be the one the payer named. */
   credential: Credential;
-  /** The payee's signature over the action hash. */
   signature: Signature;
-  /** The payee's nonce, single-use across every leg of the gate. */
-  nonce: FeltLike;
+  nonce: Felt;
 }
 
-/** The payer taking back a settlement the window closed on. */
-export interface RefundOperation {
-  kind: "Refund";
-  /** Which settlement to unwind. */
-  settlementId: FeltLike;
-  /** The payer's signature over the action hash. */
+/** A signed `Refund`, made by the payer who funded the settlement. */
+export interface RefundAuthorization extends AuthorizationBase {
+  leg: "Refund";
+  settlementId: Felt;
   signature: Signature;
-  /** The payer's nonce for this refund. A refund is an authorisation like any other. */
-  nonce: FeltLike;
+  nonce: Felt;
 }
 
-export type GateOperation = DirectOperation | FundOperation | ClaimOperation | RefundOperation;
+export type GateAuthorization =
+  | DirectAuthorization
+  | FundAuthorization
+  | ClaimAuthorization
+  | RefundAuthorization;
+
+/** Thrown when an authorisation is asked to contradict itself. */
+export class OperationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OperationError";
+  }
+}
 
 /**
- * A `SubjectAuthorization` as the eleven felts Cairo's positional `Serde` expects:
- * `[policy_id, …7 credential felts…, sig_r, sig_s, nonce]`.
+ * Sign a `Direct` payment.
+ *
+ * The `amount` given here is the amount the withdraw action will withdraw and the amount the gate
+ * will settle — {@link buildDirectActions} reads it back off the result, so there is nowhere for a
+ * second, different number to come from.
+ *
+ * `noteId` is the **resolved** id of the open note the pool will fill, not the
+ * `"${openNoteIds[0]}"` placeholder. The wallet substitutes the placeholder in the calldata, but
+ * the gate hashes what it actually received, so the subject has to sign the resolved value.
+ */
+export function authorizeDirect(
+  params: {
+    context: GateContext;
+    token: Address;
+    policyId: FeltLike;
+    credential: Credential;
+    amount: FeltLike;
+    noteId: FeltLike;
+    /** Defaults to a fresh 128-bit random nonce. */
+    nonce?: FeltLike;
+  },
+  subjectPrivateKey: FeltLike,
+): DirectAuthorization {
+  const shared = normalise(params, "Direct");
+  const actionHash = subjectActionHash({
+    chainId: params.context.chainId,
+    gateAddress: params.context.gate,
+    poolAddress: params.context.pool,
+    leg: "Direct",
+    policyId: shared.policyId,
+    noteId: shared.noteId,
+    token: shared.token,
+    amount: shared.amount,
+    nonce: shared.nonce,
+    termsHash: DIRECT_TERMS_HASH,
+  });
+
+  return {
+    leg: "Direct",
+    context: params.context,
+    token: shared.token,
+    amount: shared.amount,
+    noteId: shared.noteId,
+    termsHash: DIRECT_TERMS_HASH,
+    actionHash,
+    payer: {
+      policyId: shared.policyId,
+      credential: params.credential,
+      amount: shared.amount,
+      signature: signHash(actionHash, subjectPrivateKey),
+      nonce: shared.nonce,
+    },
+  };
+}
+
+/**
+ * Sign a `Fund`: park value with the gate for one named payee under one claim policy.
+ *
+ * The settlement id is generated here, from the platform CSPRNG, and returned on the result. That
+ * is not a convenience. Funding is permissionless and an id is single-use forever, so a
+ * predictable id can be burned ahead of you by a stranger — and it is the only handle in the event
+ * log, so a guessable one also ties the funding to the claim to whatever business record it came
+ * from. Supplying your own is possible and is checked for entropy; supplying an invoice number is
+ * refused.
+ *
+ * Every term is inside the payer's signature. {@link buildFundActions} takes this whole result, so
+ * the terms that were signed and the terms that are sent are the same values.
+ */
+export function authorizeFund(
+  params: {
+    context: GateContext;
+    token: Address;
+    policyId: FeltLike;
+    credential: Credential;
+    amount: FeltLike;
+    /** The pseudonym allowed to claim. The payee's credential must name this exact key. */
+    payeeSubjectKey: FeltLike;
+    /** The policy that payee will be judged against. Its cap must fit `amount`. */
+    payeeClaimPolicyId: FeltLike;
+    /** When the claim window closes, in unix seconds. */
+    expiresAt: FeltLike;
+    /** Defaults to {@link randomSettlementId}. A guessable value is refused. */
+    settlementId?: FeltLike;
+    /** Defaults to a fresh 128-bit random nonce. */
+    nonce?: FeltLike;
+  },
+  subjectPrivateKey: FeltLike,
+): FundAuthorization {
+  const shared = normalise({ ...params, noteId: FUND_NOTE_ID }, "Fund");
+
+  const payeeSubjectKey = toFelt(params.payeeSubjectKey);
+  if (feltEquals(payeeSubjectKey, 0)) {
+    throw new OperationError(
+      "a Fund needs a payee: a settlement with no named payee could be taken by anyone the claim " +
+        "policy accepts, and the gate refuses it with CORDON_ZERO_PAYEE",
+    );
+  }
+
+  const settlementId =
+    params.settlementId === undefined
+      ? randomSettlementId()
+      : assertUnguessableSettlementId(params.settlementId);
+  const expiresAt = Number(BigInt(toU64Felt(params.expiresAt, "expiresAt")));
+  const payeeClaimPolicyId = toFelt(params.payeeClaimPolicyId);
+
+  const termsHash = settlementTermsHash({
+    settlementId,
+    payeeSubjectKey,
+    payeeClaimPolicyId,
+    expiresAt,
+  });
+
+  const actionHash = subjectActionHash({
+    chainId: params.context.chainId,
+    gateAddress: params.context.gate,
+    poolAddress: params.context.pool,
+    leg: "Fund",
+    policyId: shared.policyId,
+    noteId: FUND_NOTE_ID,
+    token: shared.token,
+    amount: shared.amount,
+    nonce: shared.nonce,
+    termsHash,
+  });
+
+  return {
+    leg: "Fund",
+    context: params.context,
+    token: shared.token,
+    amount: shared.amount,
+    noteId: FUND_NOTE_ID,
+    termsHash,
+    actionHash,
+    settlementId,
+    payeeSubjectKey,
+    payeeClaimPolicyId,
+    expiresAt,
+    payer: {
+      policyId: shared.policyId,
+      credential: params.credential,
+      amount: shared.amount,
+      signature: signHash(actionHash, subjectPrivateKey),
+      nonce: shared.nonce,
+    },
+  };
+}
+
+/**
+ * Sign a `Claim`: the named payee takes a funded settlement.
+ *
+ * Takes the `Settlement` as read from `PolicyGate::get_settlement`, not loose fields. The amount
+ * and the claim policy come from that record, which is where the gate takes them from too, so a
+ * claim cannot be signed for the wrong amount or judged against the wrong policy.
+ */
+export function authorizeClaim(
+  params: {
+    context: GateContext;
+    /** The settlement being claimed, read from the gate. */
+    settlement: Settlement;
+    settlementId: FeltLike;
+    /** The payee's credential. Its subject key must match the settlement's named payee. */
+    credential: Credential;
+    /** The resolved id of the open note the payee is filling. */
+    noteId: FeltLike;
+    nonce?: FeltLike;
+  },
+  subjectPrivateKey: FeltLike,
+): ClaimAuthorization {
+  const { settlement } = params;
+  if (!feltEquals(params.credential.subjectPublicKey, settlement.payeeSubjectKey)) {
+    throw new OperationError(
+      `this credential names subject ${params.credential.subjectPublicKey}, but the settlement is ` +
+        `payable only to ${settlement.payeeSubjectKey}. The gate refuses anyone else with ` +
+        "CORDON_NOT_THE_PAYEE.",
+    );
+  }
+
+  const settlementId = toFelt(params.settlementId);
+  const termsHash = quotedSettlementHash(settlementId);
+  const noteId = toFelt(params.noteId);
+  const nonce = params.nonce === undefined ? randomNonce() : toFelt(params.nonce);
+
+  const actionHash = subjectActionHash({
+    chainId: params.context.chainId,
+    gateAddress: params.context.gate,
+    poolAddress: params.context.pool,
+    leg: "Claim",
+    policyId: settlement.payeeClaimPolicyId,
+    noteId,
+    token: settlement.token,
+    amount: settlement.amount,
+    nonce,
+    termsHash,
+  });
+
+  return {
+    leg: "Claim",
+    context: params.context,
+    token: settlement.token,
+    amount: settlement.amount,
+    noteId,
+    termsHash,
+    actionHash,
+    settlementId,
+    credential: params.credential,
+    signature: signHash(actionHash, subjectPrivateKey),
+    nonce,
+  };
+}
+
+/**
+ * Sign a `Refund`: the payer takes back a settlement the window closed on.
+ *
+ * Like a claim, this reads the amount and the policy off the stored settlement — a refund is judged
+ * against the policy the payer satisfied when funding, which the payer has no other way to know for
+ * certain.
+ */
+export function authorizeRefund(
+  params: {
+    context: GateContext;
+    settlement: Settlement;
+    settlementId: FeltLike;
+    /** The resolved id of the open note the payer is filling. */
+    noteId: FeltLike;
+    nonce?: FeltLike;
+  },
+  subjectPrivateKey: FeltLike,
+): RefundAuthorization {
+  const { settlement } = params;
+  const settlementId = toFelt(params.settlementId);
+  const termsHash = quotedSettlementHash(settlementId);
+  const noteId = toFelt(params.noteId);
+  const nonce = params.nonce === undefined ? randomNonce() : toFelt(params.nonce);
+
+  const actionHash = subjectActionHash({
+    chainId: params.context.chainId,
+    gateAddress: params.context.gate,
+    poolAddress: params.context.pool,
+    leg: "Refund",
+    policyId: settlement.payerPolicyId,
+    noteId,
+    token: settlement.token,
+    amount: settlement.amount,
+    nonce,
+    termsHash,
+  });
+
+  return {
+    leg: "Refund",
+    context: params.context,
+    token: settlement.token,
+    amount: settlement.amount,
+    noteId,
+    termsHash,
+    actionHash,
+    settlementId,
+    signature: signHash(actionHash, subjectPrivateKey),
+    nonce,
+  };
+}
+
+function normalise(
+  params: {
+    context: GateContext;
+    token: Address;
+    policyId: FeltLike;
+    amount: FeltLike;
+    noteId: FeltLike;
+    nonce?: FeltLike;
+  },
+  leg: Leg,
+): { token: Address; policyId: Felt; amount: bigint; noteId: Felt; nonce: Felt } {
+  const amount = BigInt(toU128Felt(params.amount, "amount"));
+  if (amount === 0n) {
+    throw new OperationError(
+      `a ${leg} for zero moves nothing and is refused with CORDON_NO_VALUE`,
+    );
+  }
+  return {
+    token: toAddress(params.token, "token"),
+    policyId: toFelt(params.policyId),
+    amount,
+    noteId: toFelt(params.noteId),
+    nonce: params.nonce === undefined ? randomNonce() : toFelt(params.nonce),
+  };
+}
+
+/**
+ * A `SubjectAuthorization` as the twelve felts Cairo's positional `Serde` expects:
+ * `[policy_id, …7 credential felts…, amount, sig_r, sig_s, nonce]`.
  */
 export function encodeSubjectAuthorization(authorization: SubjectAuthorization): Felt[] {
   return [
-    toFelt(authorization.policyId),
+    authorization.policyId,
     ...credentialCalldata(authorization.credential),
-    toFelt(authorization.signature.r),
-    toFelt(authorization.signature.s),
-    toFelt(authorization.nonce),
+    toU128Felt(authorization.amount, "amount"),
+    authorization.signature.r,
+    authorization.signature.s,
+    authorization.nonce,
   ];
 }
 
 /**
- * Encode a `GateOperation`: variant index first, then that variant's fields in declaration order.
+ * Encode the `GateOperation`: variant index first, then that variant's fields in declaration order.
  *
  * ```text
- * Direct(SubjectAuthorization)                     -> [0, …11 authorisation felts…]
- * Fund  (payer, settlement_id, payee_claim_policy_id, expires_at)
- *                                                  -> [1, …11…, settlement_id, payee_policy, expires_at]
+ * Direct(SubjectAuthorization)      -> [0, …12 authorisation felts…]
+ * Fund  (payer, settlement_id, payee_subject_key, payee_claim_policy_id, expires_at)
+ *                                   -> [1, …12…, settlement_id, payee_key, payee_policy, expires_at]
  * Claim (settlement_id, credential, sig_r, sig_s, nonce)
- *                                                  -> [2, settlement_id, …7…, r, s, nonce]
- * Refund(settlement_id, sig_r, sig_s, nonce)       -> [3, settlement_id, r, s, nonce]
+ *                                   -> [2, settlement_id, …7…, r, s, nonce]
+ * Refund(settlement_id, sig_r, sig_s, nonce)
+ *                                   -> [3, settlement_id, r, s, nonce]
  * ```
  */
-export function encodeGateOperation(operation: GateOperation): Felt[] {
-  switch (operation.kind) {
+export function encodeGateOperation(authorization: GateAuthorization): Felt[] {
+  switch (authorization.leg) {
     case "Direct":
       return [
         toFelt(GATE_OPERATION_VARIANT.Direct),
-        ...encodeSubjectAuthorization(operation.payer),
+        ...encodeSubjectAuthorization(authorization.payer),
       ];
     case "Fund":
       return [
         toFelt(GATE_OPERATION_VARIANT.Fund),
-        ...encodeSubjectAuthorization(operation.payer),
-        toFelt(operation.settlementId),
-        toFelt(operation.payeeClaimPolicyId),
-        toU64Felt(operation.expiresAt, "expiresAt"),
+        ...encodeSubjectAuthorization(authorization.payer),
+        authorization.settlementId,
+        authorization.payeeSubjectKey,
+        authorization.payeeClaimPolicyId,
+        toU64Felt(authorization.expiresAt, "expiresAt"),
       ];
     case "Claim":
       return [
         toFelt(GATE_OPERATION_VARIANT.Claim),
-        toFelt(operation.settlementId),
-        ...credentialCalldata(operation.credential),
-        toFelt(operation.signature.r),
-        toFelt(operation.signature.s),
-        toFelt(operation.nonce),
+        authorization.settlementId,
+        ...credentialCalldata(authorization.credential),
+        authorization.signature.r,
+        authorization.signature.s,
+        authorization.nonce,
       ];
     case "Refund":
       return [
         toFelt(GATE_OPERATION_VARIANT.Refund),
-        toFelt(operation.settlementId),
-        toFelt(operation.signature.r),
-        toFelt(operation.signature.s),
-        toFelt(operation.nonce),
+        authorization.settlementId,
+        authorization.signature.r,
+        authorization.signature.s,
+        authorization.nonce,
       ];
   }
 }
 
-/** The arguments `privacy_invoke` takes. */
-export interface PrivacyInvokeParams {
-  /** Which leg the gate should run. */
-  operation: GateOperation;
-  /** The ERC20 being settled. */
-  token: Address;
-  /**
-   * Overrides the `"${poolAddress}"` placeholder. Only useful when calling the gate outside a
-   * wallet-assembled transaction, such as against a mock pool in a test.
-   */
+/** Overrides for calling the gate outside a wallet-assembled transaction, such as in a test. */
+export interface CalldataOverrides {
+  /** Replaces the `"${poolAddress}"` placeholder. */
   poolAddress?: string;
   /**
-   * Overrides the note id. Defaults to `"${openNoteIds[0]}"`, or to zero on a `Fund`, which
-   * reserves no note.
+   * Replaces the `"${openNoteIds[0]}"` placeholder. Must equal the note id that was signed —
+   * a different one is refused with `CORDON_BAD_SUBJECT_SIG`, so it is rejected here instead.
    */
   noteId?: string;
-  /** Which open note the placeholder should point at. Defaults to the first. */
+  /** Which open note the placeholder points at. Defaults to the first. */
   openNoteIndex?: number;
 }
 
@@ -213,214 +553,66 @@ export interface PrivacyInvokeParams {
  * assembling the transaction. They travel as-is; hex-encoding either one breaks the substitution
  * and the gate refuses the result as `CORDON_BAD_POOL`.
  */
-export function encodePrivacyInvokeCalldata(params: PrivacyInvokeParams): CalldataItem[] {
+export function encodeGateCalldata(
+  authorization: GateAuthorization,
+  overrides: CalldataOverrides = {},
+): CalldataItem[] {
+  const noteId = resolveNoteId(authorization, overrides);
   return [
-    ...encodeGateOperation(params.operation),
-    toAddress(params.token, "token"),
-    calldataItem(params.poolAddress ?? POOL_ADDRESS_PLACEHOLDER),
-    calldataItem(params.noteId ?? defaultNoteId(params.operation, params.openNoteIndex ?? 0)),
+    ...encodeGateOperation(authorization),
+    authorization.token,
+    calldataItem(overrides.poolAddress ?? POOL_ADDRESS_PLACEHOLDER),
+    calldataItem(noteId),
   ];
 }
 
-function defaultNoteId(operation: GateOperation, index: number): string {
-  return operation.kind === "Fund" ? FUND_NOTE_ID : openNoteIdPlaceholder(index);
-}
-
-/**
- * Everything the action hash binds, in one place.
- *
- * Getting one of these wrong is the single most common way a settlement fails, because the gate
- * can only answer `CORDON_BAD_SUBJECT_SIG` and cannot say which field disagreed. What each leg
- * puts here is tabulated on {@link subjectActionHash}.
- */
-export interface ActionSigningParams {
-  /** The chain the settlement runs on, e.g. `SN_MAIN`. */
-  chainId: FeltLike;
-  /** The `PolicyGate` that will verify the signature. */
-  gate: Address;
-  /** The policy this authorisation is judged against. */
-  policyId: FeltLike;
-  /**
-   * The open note the pool will fill.
-   *
-   * This is the *resolved* id, not the `"${openNoteIds[0]}"` placeholder: the wallet substitutes
-   * the placeholder in the calldata, but the gate hashes whatever it actually received, so the
-   * subject has to sign the resolved value. Use {@link FUND_NOTE_ID} on a `Fund`, which reserves
-   * no note.
-   */
-  noteId: FeltLike;
-  /** The ERC20 being settled. */
-  token: Address;
-  /**
-   * The exact amount the gate will move: what the pool sent on `Direct` and `Fund`, and the
-   * stored settlement's amount on `Claim` and `Refund`.
-   */
-  amount: FeltLike;
-  /**
-   * Subject-chosen, and single-use **across every leg of the gate**, not per leg. One nonce
-   * registry serves `Direct`, `Fund`, `Claim` and `Refund` alike, which is what lets the leg stay
-   * out of the signed message: a signature carried from one leg to another replays its nonce and
-   * is refused with `CORDON_NONCE_USED`. Use {@link randomNonce} unless you are tracking them.
-   */
-  nonce: FeltLike;
-}
-
-/** Sign one leg's authorisation with the subject key behind the credential. */
-export function signAction(params: ActionSigningParams, subjectPrivateKey: FeltLike): Signature {
-  return signHash(
-    subjectActionHash({
-      chainId: params.chainId,
-      gateAddress: params.gate,
-      policyId: params.policyId,
-      noteId: params.noteId,
-      token: params.token,
-      amount: params.amount,
-      nonce: params.nonce,
-    }),
-    subjectPrivateKey,
-  );
-}
-
-/**
- * Sign an authorisation and package it with the credential it is made under.
- *
- * This is the value `Direct` and `Fund` carry. `Claim` and `Refund` take the signature on its own,
- * because the gate reads their policy from the stored settlement rather than from the caller.
- */
-export function authorizeAction(
-  params: ActionSigningParams & { credential: Credential },
-  subjectPrivateKey: FeltLike,
-): SubjectAuthorization {
-  return {
-    policyId: toFelt(params.policyId),
-    credential: params.credential,
-    signature: signAction(params, subjectPrivateKey),
-    nonce: toFelt(params.nonce),
-  };
-}
-
-/** What every gate transaction names, whatever the leg. */
-interface GateTransactionBase {
-  /** The deployed `PolicyGate`. */
-  gate: Address;
-  /** The ERC20 being settled. */
-  token: Address;
-  /** Test-only overrides; see {@link PrivacyInvokeParams}. */
-  poolAddress?: string;
-  noteId?: string;
-  openNoteIndex?: number;
-}
-
-/** A `Direct` settlement: gated value straight into the payee's note. */
-export interface DirectTransactionParams extends GateTransactionBase {
-  /** Value to move, in token base units. Must equal the amount the payer signed over. */
-  amount: FeltLike;
-  /** The pool user the resulting open note is credited to. */
-  payee: Address;
-  /** The payer's authorisation, from {@link authorizeAction}. */
-  payer: SubjectAuthorization;
-}
-
-/** A `Fund`: gated value parked for a payee who must present their own credential. */
-export interface FundTransactionParams extends GateTransactionBase {
-  amount: FeltLike;
-  /** The payer's authorisation, signed with {@link FUND_NOTE_ID} as the note id. */
-  payer: SubjectAuthorization;
-  /** Names the escrow. Single-use, ever. */
-  settlementId: FeltLike;
-  /** The policy the payee's credential will be judged against on `Claim`. */
-  payeeClaimPolicyId: FeltLike;
-  /** Unix seconds after which only a `Refund` is possible. */
-  expiresAt: FeltLike;
-}
-
-/** A `Claim`: the payee takes an escrow, presenting their own credential. */
-export interface ClaimTransactionParams extends GateTransactionBase {
-  settlementId: FeltLike;
-  /** The payee's credential. */
-  credential: Credential;
-  /** The payee's signature over the action hash. */
-  signature: Signature;
-  /** The payee's nonce. */
-  nonce: FeltLike;
-  /** Who the claimed note is credited to — the payee themselves. */
-  recipient: Address;
-}
-
-/** A `Refund`: the payer takes back an unclaimed escrow. */
-export interface RefundTransactionParams extends GateTransactionBase {
-  settlementId: FeltLike;
-  /** The payer's signature over the action hash. */
-  signature: Signature;
-  /** The payer's nonce. */
-  nonce: FeltLike;
-  /** Who the refunded note is credited to — the original payer. */
-  recipient: Address;
-}
-
-/** The `invoke` calldata for a `Direct` settlement. */
-export function encodeDirectCalldata(params: DirectTransactionParams): CalldataItem[] {
-  return encodePrivacyInvokeCalldata({
-    ...passthrough(params),
-    operation: { kind: "Direct", payer: params.payer },
-  });
-}
-
-/** The `invoke` calldata for a `Fund`. */
-export function encodeFundCalldata(params: FundTransactionParams): CalldataItem[] {
-  return encodePrivacyInvokeCalldata({
-    ...passthrough(params),
-    operation: {
-      kind: "Fund",
-      payer: params.payer,
-      settlementId: params.settlementId,
-      payeeClaimPolicyId: params.payeeClaimPolicyId,
-      expiresAt: params.expiresAt,
-    },
-  });
-}
-
-/** The `invoke` calldata for a `Claim`. */
-export function encodeClaimCalldata(params: ClaimTransactionParams): CalldataItem[] {
-  return encodePrivacyInvokeCalldata({
-    ...passthrough(params),
-    operation: {
-      kind: "Claim",
-      settlementId: params.settlementId,
-      credential: params.credential,
-      signature: params.signature,
-      nonce: params.nonce,
-    },
-  });
-}
-
-/** The `invoke` calldata for a `Refund`. */
-export function encodeRefundCalldata(params: RefundTransactionParams): CalldataItem[] {
-  return encodePrivacyInvokeCalldata({
-    ...passthrough(params),
-    operation: {
-      kind: "Refund",
-      settlementId: params.settlementId,
-      signature: params.signature,
-      nonce: params.nonce,
-    },
-  });
+function resolveNoteId(
+  authorization: GateAuthorization,
+  overrides: CalldataOverrides,
+): string {
+  if (authorization.leg === "Fund") {
+    if (overrides.noteId !== undefined && !feltEquals(overrides.noteId, 0)) {
+      throw new OperationError(
+        "a Fund fills no open note, so its note id must be zero; the gate refuses anything else " +
+          "with CORDON_NOTE_ID_NOT_ZERO",
+      );
+    }
+    return FUND_NOTE_ID;
+  }
+  if (overrides.noteId === undefined) return openNoteIdPlaceholder(overrides.openNoteIndex ?? 0);
+  if (!feltEquals(overrides.noteId, authorization.noteId)) {
+    throw new OperationError(
+      `this authorisation was signed for note ${authorization.noteId}, so sending it with note ` +
+        `${overrides.noteId} would be refused with CORDON_BAD_SUBJECT_SIG`,
+    );
+  }
+  return overrides.noteId;
 }
 
 /**
  * The full action array for a `Direct` settlement: `withdraw` → `transfer(OPEN)` → `invoke`.
  *
- * The pool moves the value to the gate *before* calling it, the open note reserves where the gated
- * value lands, and the invoke runs the policy. An invoke-only array is rejected by the wallet with
- * `INVALID_REQUEST_PAYLOAD`, which is why this is three actions and not one.
+ * The withdraw amount is the amount inside the authorisation, so the value the pool moves and the
+ * value the payer signed for are the same number by construction.
  */
-export function buildDirectActions(params: DirectTransactionParams): Strk20Action[] {
+export function buildDirectActions(params: {
+  authorization: DirectAuthorization;
+  /** The pool user the resulting open note is credited to. */
+  payee: Address;
+  /** Test-only; see {@link CalldataOverrides}. */
+  overrides?: CalldataOverrides;
+}): Strk20Action[] {
+  const { authorization } = params;
   return [
-    withdrawAction({ token: params.token, amount: params.amount, recipient: params.gate }),
-    openNoteAction({ token: params.token, recipient: params.payee }),
+    withdrawAction({
+      token: authorization.token,
+      amount: authorization.amount,
+      recipient: authorization.context.gate,
+    }),
+    openNoteAction({ token: authorization.token, recipient: params.payee }),
     invokeAction({
-      contract: toAddress(params.gate, "gate"),
-      calldata: encodeDirectCalldata(params),
+      contract: authorization.context.gate,
+      calldata: encodeGateCalldata(authorization, params.overrides ?? {}),
     }),
   ];
 }
@@ -428,49 +620,91 @@ export function buildDirectActions(params: DirectTransactionParams): Strk20Actio
 /**
  * The full action array for a `Fund`: `withdraw` → `invoke`.
  *
- * No open note, because nothing comes back in this transaction — the gate books a settlement,
- * keeps the value, and returns an empty deposit span.
+ * No open note, because nothing comes back in this transaction — the gate books a settlement, keeps
+ * the value, and returns an empty deposit span.
  */
-export function buildFundActions(params: FundTransactionParams): Strk20Action[] {
+export function buildFundActions(params: {
+  authorization: FundAuthorization;
+  /** Test-only; see {@link CalldataOverrides}. */
+  overrides?: CalldataOverrides;
+}): Strk20Action[] {
+  const { authorization } = params;
   return [
-    withdrawAction({ token: params.token, amount: params.amount, recipient: params.gate }),
-    invokeAction({ contract: toAddress(params.gate, "gate"), calldata: encodeFundCalldata(params) }),
+    withdrawAction({
+      token: authorization.token,
+      amount: authorization.amount,
+      recipient: authorization.context.gate,
+    }),
+    invokeAction({
+      contract: authorization.context.gate,
+      calldata: encodeGateCalldata(authorization, params.overrides ?? {}),
+    }),
   ];
 }
 
 /**
  * The full action array for a `Claim`: `transfer(OPEN, self)` → `invoke`.
  *
- * There is no withdraw: the value has been sitting at the gate since the `Fund`, and the payee
- * funds nothing. The open note is where the gate deposits it once the payee's credential clears.
- * A leg the pool *did* fund is refused with `CORDON_UNEXPECTED_VALUE`.
+ * There is deliberately **no withdraw**. The value has been sitting at the gate since the `Fund`,
+ * and the payee funds nothing; a withdraw here would push value into the gate that no leg pays out,
+ * where it becomes dust.
  */
-export function buildClaimActions(params: ClaimTransactionParams): Strk20Action[] {
+export function buildClaimActions(params: {
+  authorization: ClaimAuthorization;
+  /** Who the claimed note is credited to — the payee themselves. */
+  recipient: Address;
+  /** Test-only; see {@link CalldataOverrides}. */
+  overrides?: CalldataOverrides;
+}): Strk20Action[] {
+  const { authorization } = params;
   return [
-    openNoteAction({ token: params.token, recipient: params.recipient }),
+    openNoteAction({ token: authorization.token, recipient: params.recipient }),
     invokeAction({
-      contract: toAddress(params.gate, "gate"),
-      calldata: encodeClaimCalldata(params),
+      contract: authorization.context.gate,
+      calldata: encodeGateCalldata(authorization, params.overrides ?? {}),
     }),
   ];
 }
 
 /** The full action array for a `Refund`: `transfer(OPEN, self)` → `invoke`, back to the payer. */
-export function buildRefundActions(params: RefundTransactionParams): Strk20Action[] {
+export function buildRefundActions(params: {
+  authorization: RefundAuthorization;
+  /** Who the refunded note is credited to — the original payer. */
+  recipient: Address;
+  /** Test-only; see {@link CalldataOverrides}. */
+  overrides?: CalldataOverrides;
+}): Strk20Action[] {
+  const { authorization } = params;
   return [
-    openNoteAction({ token: params.token, recipient: params.recipient }),
+    openNoteAction({ token: authorization.token, recipient: params.recipient }),
     invokeAction({
-      contract: toAddress(params.gate, "gate"),
-      calldata: encodeRefundCalldata(params),
+      contract: authorization.context.gate,
+      calldata: encodeGateCalldata(authorization, params.overrides ?? {}),
     }),
   ];
 }
 
-function passthrough(params: GateTransactionBase): Omit<PrivacyInvokeParams, "operation"> {
-  return {
-    token: params.token,
-    ...(params.poolAddress !== undefined ? { poolAddress: params.poolAddress } : {}),
-    ...(params.noteId !== undefined ? { noteId: params.noteId } : {}),
-    ...(params.openNoteIndex !== undefined ? { openNoteIndex: params.openNoteIndex } : {}),
-  };
+/**
+ * Build the action array for any signed leg.
+ *
+ * `payee` (for a `Direct`) or `recipient` (for a `Claim` or `Refund`) says who the resulting open
+ * note is credited to; a `Fund` creates no note and needs neither.
+ */
+export type BuildActionsParams =
+  | { authorization: DirectAuthorization; payee: Address; overrides?: CalldataOverrides }
+  | { authorization: FundAuthorization; overrides?: CalldataOverrides }
+  | { authorization: ClaimAuthorization; recipient: Address; overrides?: CalldataOverrides }
+  | { authorization: RefundAuthorization; recipient: Address; overrides?: CalldataOverrides };
+
+export function buildActions(params: BuildActionsParams): Strk20Action[] {
+  switch (params.authorization.leg) {
+    case "Direct":
+      return buildDirectActions(params as Parameters<typeof buildDirectActions>[0]);
+    case "Fund":
+      return buildFundActions(params as Parameters<typeof buildFundActions>[0]);
+    case "Claim":
+      return buildClaimActions(params as Parameters<typeof buildClaimActions>[0]);
+    case "Refund":
+      return buildRefundActions(params as Parameters<typeof buildRefundActions>[0]);
+  }
 }

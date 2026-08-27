@@ -13,8 +13,10 @@ import {
   U64_MAX,
   feltEquals,
   feltToShortString,
+  toAddress,
   toBigInt,
   toFelt,
+  type Address,
   type Felt,
   type FeltLike,
 } from "./felt.js";
@@ -27,6 +29,14 @@ export interface Policy {
   requiredClaim: Felt;
   /** The issuer that must have signed it. Zero means any active issuer will do. */
   issuerId: Felt;
+  /**
+   * The only ERC20 this policy may move. Zero means any token.
+   *
+   * Pinning is the allowlist. The `token` argument on `privacy_invoke` is caller calldata with
+   * nothing behind it, and a fee-on-transfer or rebasing ERC20 breaks the ledger the gate keeps,
+   * so a real deployment pins the asset it intends to settle.
+   */
+  token: Felt;
   /** Most one settlement may move, in token base units. Zero means unlimited. */
   maxAmount: bigint;
   /** Length of a velocity epoch in seconds. Zero disables velocity accounting. */
@@ -43,6 +53,8 @@ export interface Policy {
 export interface PolicyInput {
   requiredClaim: FeltLike;
   issuerId?: FeltLike;
+  /** Zero, or omitted, means any token — see {@link Policy.token} for why you should pin one. */
+  token?: Address;
   maxAmount?: FeltLike;
   epochLength?: FeltLike;
   maxPerEpoch?: FeltLike;
@@ -75,6 +87,7 @@ export function createPolicy(input: PolicyInput): Policy {
   return {
     requiredClaim: toFelt(input.requiredClaim),
     issuerId: toFelt(input.issuerId ?? 0),
+    token: input.token === undefined ? "0x0" : toAddress(input.token, "token"),
     maxAmount,
     epochLength,
     maxPerEpoch,
@@ -83,11 +96,12 @@ export function createPolicy(input: PolicyInput): Policy {
   };
 }
 
-/** The policy as the seven felts Cairo's positional `Serde` expects. */
+/** The policy as the eight felts Cairo's positional `Serde` expects. */
 export function policyCalldata(policy: Policy): Felt[] {
   return [
     policy.requiredClaim,
     policy.issuerId,
+    policy.token,
     toFelt(policy.maxAmount),
     toFelt(policy.epochLength),
     toFelt(policy.maxPerEpoch),
@@ -96,20 +110,21 @@ export function policyCalldata(policy: Policy): Felt[] {
   ];
 }
 
-/** Read a policy back out of the seven felts `get_policy` returned. */
+/** Read a policy back out of the eight felts `get_policy` returned. */
 export function policyFromCalldata(calldata: readonly FeltLike[]): Policy {
-  if (calldata.length !== 7) {
-    throw new PolicyError(`a policy is 7 felts, got ${calldata.length}`);
+  if (calldata.length !== 8) {
+    throw new PolicyError(`a policy is 8 felts, got ${calldata.length}`);
   }
   const at = (index: number): FeltLike => calldata[index] as FeltLike;
   return {
     requiredClaim: toFelt(at(0)),
     issuerId: toFelt(at(1)),
-    maxAmount: toBigInt(at(2)),
-    epochLength: toBigInt(at(3)),
-    maxPerEpoch: toBigInt(at(4)),
-    requirePayeeCredential: toBigInt(at(5)) !== 0n,
-    active: toBigInt(at(6)) !== 0n,
+    token: toFelt(at(2)),
+    maxAmount: toBigInt(at(3)),
+    epochLength: toBigInt(at(4)),
+    maxPerEpoch: toBigInt(at(5)),
+    requirePayeeCredential: toBigInt(at(6)) !== 0n,
+    active: toBigInt(at(7)) !== 0n,
   };
 }
 
@@ -141,6 +156,11 @@ export function describePolicy(policy: Policy): string[] {
       : `Only from the issuer ${feltToShortString(policy.issuerId) ?? policy.issuerId}.`,
   );
   lines.push(
+    toBigInt(policy.token) === 0n
+      ? "Accepts any ERC20."
+      : `Only the token at ${policy.token}.`,
+  );
+  lines.push(
     policy.maxAmount === 0n
       ? "No per-transaction cap."
       : `At most ${policy.maxAmount} per transaction.`,
@@ -161,8 +181,15 @@ export interface PreflightInput {
   policy: Policy;
   /** The payer's credential. */
   credential: Credential;
-  /** The amount that will reach the gate, in token base units. */
+  /** The amount the subject will sign for, in token base units. */
   amount: FeltLike;
+  /** The ERC20 being settled, if you want the policy's token pin checked. */
+  token?: Address;
+  /**
+   * What the gate holds above its own ledger, if you have read
+   * `balance_of - accounted_balance(token)`. Less than `amount` is `CORDON_UNDERFUNDED`.
+   */
+  unaccountedBalance?: FeltLike;
   /** The issuer's registered public key, if you have read it. Enables the signature check. */
   issuerPublicKey?: FeltLike;
   /** Whether the issuer is registered and active, if you have read it. */
@@ -215,14 +242,26 @@ export function preflight(input: PreflightInput): Preflight {
     if (refusal) refusals.push(refusal);
   };
 
-  // 2. The policy is published and active, and does not need a payee credential this flow cannot
-  //    carry.
+  // 2. The policy is published and active, covers this token, and does not need a payee credential
+  //    the Direct leg cannot carry.
   if (!policy.active) refuse("CORDON_NO_POLICY");
+  if (input.token !== undefined) {
+    const pinned = toBigInt(policy.token);
+    if (pinned !== 0n && !feltEquals(policy.token, input.token)) refuse("CORDON_TOKEN_NOT_ALLOWED");
+  } else if (toBigInt(policy.token) !== 0n) {
+    skipped.push("the policy's token pin (no token given)");
+  }
   if (policy.requirePayeeCredential) refuse("CORDON_PAYEE_REQUIRED");
 
-  // 3. The pool actually sent value.
+  // 3. There is value, and the gate can back it. The amount is signed, not inferred from a
+  //    balance, so what matters is whether the gate holds at least that much above its ledger.
   if (amount === 0n) refuse("CORDON_NO_VALUE");
   if (amount > U128_MAX) refuse("CORDON_AMOUNT_OVERFLOW");
+  if (input.unaccountedBalance !== undefined) {
+    if (toBigInt(input.unaccountedBalance) < amount) refuse("CORDON_UNDERFUNDED");
+  } else {
+    skipped.push("the gate can cover the amount (no unaccountedBalance given)");
+  }
 
   // 4. The issuer is registered, active, and the one the policy pins.
   if (input.issuerActive === false) refuse("CORDON_BAD_ISSUER");
@@ -244,7 +283,7 @@ export function preflight(input: PreflightInput): Preflight {
   skipped.push(...credentialCheck.skipped.filter((entry) => !entry.startsWith("issuer pinning")));
 
   // 9. The subject's authorisation, and its nonce. The signature itself is checked by
-  //    `verifySubjectAction`, which needs the note id this settlement will use.
+  //    `verifySubjectAction`, which needs the whole action hash this settlement will use.
   if (input.nonceUsed === true) refuse("CORDON_NONCE_USED");
   else if (input.nonceUsed === undefined) skipped.push("nonce is unused (not supplied)");
 

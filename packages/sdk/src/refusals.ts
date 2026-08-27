@@ -16,6 +16,7 @@ import { feltToShortString, isFelt } from "./felt.js";
 export type RefusalSource =
   | "gate"
   | "settlement"
+  | "sweep"
   | "issuer-registry"
   | "revocation-registry"
   | "policy-registry"
@@ -80,6 +81,29 @@ const REFUSALS: readonly Refusal[] = [
     step: 1,
   },
   {
+    code: "CORDON_STALE_ALLOWANCE",
+    title: "An earlier approval was never consumed",
+    explanation:
+      "The gate still owes the pool an allowance from a previous leg. The pool spends exactly what " +
+      "it is approved in the same transaction, so a residue means something went wrong upstream, " +
+      "and adding to it would let one approval be spent against another leg's value.",
+    source: "gate",
+    remedy: "operator",
+    step: 1,
+  },
+  {
+    code: "CORDON_TOKEN_NOT_ALLOWED",
+    title: "This policy does not cover that token",
+    explanation:
+      "The policy is pinned to one ERC20 and the transaction names a different one. Pinning is the " +
+      "allowlist: the token argument is caller calldata with nothing behind it, and a " +
+      "fee-on-transfer or rebasing token would break the gate's ledger. Use the policy published " +
+      "for the asset you are settling.",
+    source: "gate",
+    remedy: "integrator",
+    step: 2,
+  },
+  {
     code: "CORDON_NO_POLICY",
     title: "No such policy",
     explanation:
@@ -119,6 +143,28 @@ const REFUSALS: readonly Refusal[] = [
       "supply reaches this, so in practice it means the token contract reported a nonsense balance.",
     source: "gate",
     remedy: "integrator",
+    step: 3,
+  },
+  {
+    code: "CORDON_UNDERFUNDED",
+    title: "Less value arrived than was signed for",
+    explanation:
+      "The subject authorised a larger amount than the gate can back, once value already owed to " +
+      "open settlements is set aside. Almost always the withdraw action in the transaction moved " +
+      "less than the signature covers — the SDK builds both from one number, so this points at a " +
+      "hand-assembled action array.",
+    source: "gate",
+    remedy: "integrator",
+    step: 3,
+  },
+  {
+    code: "CORDON_LEDGER_BROKEN",
+    title: "The gate's internal ledger would overflow",
+    explanation:
+      "Booking this settlement would push the gate's accounting past what a u128 holds. Named " +
+      "rather than left as a raw arithmetic panic, so every refusal still carries a Cordon code.",
+    source: "gate",
+    remedy: "operator",
     step: 3,
   },
   {
@@ -239,6 +285,25 @@ const REFUSALS: readonly Refusal[] = [
     remedy: "integrator",
   },
   {
+    code: "CORDON_ZERO_PAYEE",
+    title: "A settlement needs a named payee",
+    explanation:
+      "Funding with no payee key would create an escrow anyone the claim policy accepts could " +
+      "take — an ordinary customer of the same issuer, no forgery required. Name the pseudonym " +
+      "that is allowed to claim.",
+    source: "settlement",
+    remedy: "integrator",
+  },
+  {
+    code: "CORDON_NOTE_ID_NOT_ZERO",
+    title: "A funding leg must not name an open note",
+    explanation:
+      "A Fund's action array is withdraw then invoke, with no transfer(OPEN), so there is no note " +
+      "to fill. The note id must be zero in both the calldata and the signature.",
+    source: "settlement",
+    remedy: "integrator",
+  },
+  {
     code: "CORDON_SETTLEMENT_EXISTS",
     title: "That settlement id has already been used",
     explanation:
@@ -255,6 +320,26 @@ const REFUSALS: readonly Refusal[] = [
       "this is the wrong id.",
     source: "settlement",
     remedy: "payer",
+  },
+  {
+    code: "CORDON_NOT_THE_PAYEE",
+    title: "This settlement is payable to someone else",
+    explanation:
+      "The claimant is not the pseudonym the payer named when funding. Holding a credential the " +
+      "claim policy accepts is not enough, and deliberately so: without this check any customer of " +
+      "the same issuer could read a settlement id out of the log and take somebody else's money.",
+    source: "settlement",
+    remedy: "payer",
+  },
+  {
+    code: "CORDON_PAYEE_OVER_CAP",
+    title: "The payee could never claim this much",
+    explanation:
+      "The amount being funded does not fit the claim policy's per-transaction cap, so no claim " +
+      "would ever succeed. Refused at funding time rather than after the money is committed and " +
+      "the payee has shipped against it. Fund less, or name a claim policy with a higher cap.",
+    source: "settlement",
+    remedy: "integrator",
   },
   {
     code: "CORDON_ALREADY_CLAIMED",
@@ -308,17 +393,6 @@ const REFUSALS: readonly Refusal[] = [
     source: "settlement",
     remedy: "integrator",
   },
-  {
-    code: "CORDON_UNEXPECTED_VALUE",
-    title: "This leg should not carry value",
-    explanation:
-      "Only the funding leg is fed by the pool. A claim or a refund moves value the gate is " +
-      "already holding, so its action array is `transfer(OPEN, self)` → `invoke` with no withdraw. " +
-      "An unexpected balance means the wrong action array was built.",
-    source: "settlement",
-    remedy: "integrator",
-  },
-
   // Issuer registry.
   {
     code: "CORDON_ZERO_ISSUER_ID",
@@ -442,6 +516,16 @@ const REFUSALS: readonly Refusal[] = [
       "A policy with a velocity epoch but a zero aggregate would refuse every settlement, however " +
       "small. If the intent is no velocity limit, set the epoch length to zero instead.",
     source: "policy-registry",
+    remedy: "operator",
+  },
+  {
+    code: "CORDON_NOTHING_TO_SWEEP",
+    title: "There is no dust to sweep",
+    explanation:
+      "The gate holds exactly what its ledger says it owes, so there is nothing above the open " +
+      "settlements to remove. Sweeping is bounded by balance minus accounted value, which is what " +
+      "keeps a funded settlement arithmetically out of the owner's reach.",
+    source: "sweep",
     remedy: "operator",
   },
 ];

@@ -1,5 +1,5 @@
 /**
- * The two hash preimages Cordon verifies signatures against.
+ * The hash preimages Cordon verifies signatures against.
  *
  * These reproduce `contracts/src/hashing.cairo` field for field. They are a public contract, not
  * an implementation detail: if this file and the Cairo file disagree by one element or one byte of
@@ -25,24 +25,53 @@ import {
 /**
  * Domain-separation tags. Template: `CORDON_<PURPOSE>:V<VERSION>`.
  *
- * The tag is the first element of every preimage, and it is what stops a credential signature from
- * ever being replayed as an action signature — a subject may well hold one key used in both roles.
- * A change to a field list means a new tag, never a silent reinterpretation of signatures already
- * in circulation.
+ * The tag is the first element of every preimage, and it is what stops one hash being replayed as
+ * another — a subject may hold one key used in several roles. A change to a field list means a new
+ * tag, never a silent reinterpretation of signatures already in circulation.
  */
 export const DOMAIN_TAGS = {
   /** Issuer-signed attestation. */
   credential: "CORDON_CREDENTIAL:V1",
-  /** Subject-signed authorisation of one settlement at one gate. */
-  subjectAction: "CORDON_SUBJECT_ACTION:V2",
+  /** Subject-signed authorisation of one leg at one gate. */
+  subjectAction: "CORDON_SUBJECT_ACTION:V3",
+  /** The settlement terms nested inside an action hash. */
+  settlementTerms: "CORDON_SETTLEMENT_TERMS:V1",
   /** Seed for deriving a subject key from a wallet signature. Never verified on chain. */
   subjectKeyDerivation: "CORDON_SUBJECT_KEY:V1",
 } as const;
 
 /** `'CORDON_CREDENTIAL:V1'` as a felt. */
 export const CREDENTIAL_TAG: Felt = toFelt(DOMAIN_TAGS.credential);
-/** `'CORDON_SUBJECT_ACTION:V2'` as a felt. */
+/** `'CORDON_SUBJECT_ACTION:V3'` as a felt. */
 export const SUBJECT_ACTION_TAG: Felt = toFelt(DOMAIN_TAGS.subjectAction);
+/** `'CORDON_SETTLEMENT_TERMS:V1'` as a felt. */
+export const SETTLEMENT_TERMS_TAG: Felt = toFelt(DOMAIN_TAGS.settlementTerms);
+
+/** The four legs of `privacy_invoke`, as the names this SDK uses for them. */
+export type Leg = "Direct" | "Fund" | "Claim" | "Refund";
+
+/**
+ * Leg tags — which `GateOperation` an authorisation is for, inside the signed message.
+ *
+ * Short strings rather than the enum's discriminant, on purpose: a discriminant is a position, and
+ * positions move when someone adds a variant. A tag means the same thing forever and is legible in
+ * a raw calldata dump.
+ */
+export const LEG_TAGS: Readonly<Record<Leg, Felt>> = {
+  Direct: toFelt("CORDON_LEG_DIRECT"),
+  Fund: toFelt("CORDON_LEG_FUND"),
+  Claim: toFelt("CORDON_LEG_CLAIM"),
+  Refund: toFelt("CORDON_LEG_REFUND"),
+};
+
+/**
+ * The terms hash a `Direct` leg carries: a literal zero.
+ *
+ * A `Direct` payment has no settlement, so there are no terms to bind. Note that this is **not**
+ * `settlementTermsHash` of four zeros — that is a large non-zero felt, and using it here produces
+ * a signature the gate refuses with `CORDON_BAD_SUBJECT_SIG` and no further explanation.
+ */
+export const DIRECT_TERMS_HASH: Felt = "0x0";
 
 /** The fields an issuer's signature covers. */
 export interface CredentialHashInput {
@@ -58,37 +87,64 @@ export interface CredentialHashInput {
   expiresAt: FeltLike;
 }
 
+/** The terms of a settlement, as the nested hash binds them. */
+export interface SettlementTermsHashInput {
+  /** The settlement id. Must be random — see `randomSettlementId`. */
+  settlementId: FeltLike;
+  /** The pseudonym allowed to claim. Zero on `Claim` and `Refund`. */
+  payeeSubjectKey: FeltLike;
+  /** The policy the payee must satisfy. Zero on `Claim` and `Refund`. */
+  payeeClaimPolicyId: FeltLike;
+  /** When the claim window closes. Zero on `Claim` and `Refund`. */
+  expiresAt: FeltLike;
+}
+
 /**
  * The fields a subject's signature covers.
  *
- * One preimage serves all four legs of `privacy_invoke`, and what each leg puts in it differs:
+ * One preimage serves all four legs, and what each leg puts in it differs:
  *
- * | Leg | Signer | `policyId` | `noteId` | `amount` |
- * | --- | --- | --- | --- | --- |
- * | `Direct` | payer | the payer policy | the resolved `${openNoteIds[0]}` | what the pool sent |
- * | `Fund` | payer | the payer policy | `0` — no open note exists | what the pool sent |
- * | `Claim` | payee | the settlement's `payeeClaimPolicyId` | the payee's own note | the settlement's amount |
- * | `Refund` | payer | the settlement's `payerPolicyId` | the payer's own note | the settlement's amount |
+ * | Leg | Signer | `policyId` | `noteId` | `amount` | `termsHash` |
+ * | --- | --- | --- | --- | --- | --- |
+ * | `Direct` | payer | the payer policy | the resolved open note id | what the pool withdrew | `0` |
+ * | `Fund` | payer | the payer policy | `0` — no note exists | what the pool withdrew | all four terms |
+ * | `Claim` | payee | the settlement's `payeeClaimPolicyId` | the payee's own note id | the settlement's amount | the id, rest zero |
+ * | `Refund` | payer | the settlement's `payerPolicyId` | the payer's own note id | the settlement's amount | the id, rest zero |
  *
- * The leg itself is deliberately absent. It does not need to be there: every leg burns a nonce
- * against the signing subject's key from one registry shared across all of them, so a signature
- * carried from one leg to another replays its nonce and is refused with `CORDON_NONCE_USED`.
+ * The leg is in the message, and that is load-bearing. Without it, a payer who signed a `Direct`
+ * payment into their own note had also — one nonce, one legitimate use — authorised a `Fund`
+ * parking that money in an escrow whose id, payee, claim policy and expiry were chosen by whoever
+ * assembled the transaction. The nonce registry does not help: it stops a *second* use, not a
+ * first use that was the wrong one.
  */
 export interface SubjectActionHashInput {
-  /** The Starknet chain this settlement is for, e.g. `SN_MAIN`. */
+  /** The chain this will execute on. Read it from the provider, never from a config default. */
   chainId: FeltLike;
   /** The `PolicyGate` that will verify this signature. */
   gateAddress: Address;
+  /** The privacy pool that will pull the value. Must equal `PolicyGate::privacy_pool()`. */
+  poolAddress: Address;
+  /** Which leg this authorises. */
+  leg: Leg;
   /** The published rule set this authorisation is judged against. */
   policyId: FeltLike;
   /** The open note the pool will fill, or `0` on a `Fund`, which reserves none. */
   noteId: FeltLike;
   /** The ERC20 being settled. */
   token: Address;
-  /** Value in the token's base units — the plaintext amount the gate is moving. */
+  /**
+   * The exact value the gate will move.
+   *
+   * Authoritative: the gate takes the amount from the signed authorisation and consults its own
+   * balance only to check it can cover it. It never derives an amount from `balance_of`, because
+   * `balance_of` is a permissionlessly writable global — a stranger could otherwise inflate,
+   * deflate or block a payment the subject had already signed.
+   */
   amount: FeltLike;
   /** Subject-chosen, and single-use across every leg of the gate. */
   nonce: FeltLike;
+  /** {@link DIRECT_TERMS_HASH} on `Direct`; otherwise a {@link settlementTermsHash}. */
+  termsHash: FeltLike;
 }
 
 /**
@@ -119,46 +175,97 @@ export function credentialPreimage(input: CredentialHashInput): Felt[] {
  * signature over it. Every asserted field is inside it, so no one can swap the claim, the subject
  * or the expiry underneath an issuer's signature.
  *
- * The hash binds no chain id and no verifier: a Cordon credential is a portable statement about a
- * subject, valid at any gate that trusts the same issuer registry. Scoping a credential to a use
- * is the policy's job.
+ * Still `:V1`, deliberately. It binds no chain and no verifier: a credential is a portable
+ * statement about a subject, true at every gate that trusts the same issuer, on every network.
+ * Scoping a credential to a use is the policy's job. An action authorisation is the opposite kind
+ * of statement, which is why that one is bound to everything it can be.
  */
 export function credentialHash(input: CredentialHashInput): Felt {
   return poseidon(credentialPreimage(input));
 }
 
 /**
+ * The exact felt list the nested settlement-terms hash covers.
+ *
+ * ```text
+ * ['CORDON_SETTLEMENT_TERMS:V1', settlement_id, payee_subject_key, payee_claim_policy_id, expires_at]
+ * ```
+ */
+export function settlementTermsPreimage(input: SettlementTermsHashInput): Felt[] {
+  return [
+    SETTLEMENT_TERMS_TAG,
+    toFelt(input.settlementId),
+    toFelt(input.payeeSubjectKey),
+    toFelt(input.payeeClaimPolicyId),
+    toU64Felt(input.expiresAt, "expiresAt"),
+  ];
+}
+
+/**
+ * The terms of a settlement, hashed for nesting inside an action hash.
+ *
+ * It carries its own domain tag even though it is only ever nested, so its digest can never be
+ * mistaken for a hash of some other four-felt structure.
+ *
+ * `Fund` fills every field: the payer is agreeing to all of them. `Claim` and `Refund` fill only
+ * the id and zero the rest — use {@link quotedSettlementHash} for those. `Direct` has no
+ * settlement and uses {@link DIRECT_TERMS_HASH}, a literal zero.
+ */
+export function settlementTermsHash(input: SettlementTermsHashInput): Felt {
+  return poseidon(settlementTermsPreimage(input));
+}
+
+/**
+ * The terms hash a `Claim` or `Refund` carries: the settlement id, and nothing else to choose.
+ *
+ * Binding the id is what stops one claim signature being valid for any open settlement that
+ * happens to share a claim policy, a token and an amount.
+ */
+export function quotedSettlementHash(settlementId: FeltLike): Felt {
+  return settlementTermsHash({
+    settlementId,
+    payeeSubjectKey: 0,
+    payeeClaimPolicyId: 0,
+    expiresAt: 0,
+  });
+}
+
+/**
  * The exact felt list a subject's signature covers, tag first.
  *
  * ```text
- * ['CORDON_SUBJECT_ACTION:V2', chain_id, gate_address, policy_id, note_id, token, amount, nonce]
+ * ['CORDON_SUBJECT_ACTION:V3', chain_id, gate_address, pool_address, leg,
+ *  policy_id, note_id, token, amount, nonce, terms_hash]
  * ```
  */
 export function subjectActionPreimage(input: SubjectActionHashInput): Felt[] {
+  const leg = LEG_TAGS[input.leg];
+  if (leg === undefined) {
+    throw new TypeError(
+      `unknown leg ${JSON.stringify(input.leg)}; expected one of ${Object.keys(LEG_TAGS).join(", ")}`,
+    );
+  }
   return [
     SUBJECT_ACTION_TAG,
     toFelt(input.chainId),
     toAddress(input.gateAddress, "gateAddress"),
+    toAddress(input.poolAddress, "poolAddress"),
+    leg,
     toFelt(input.policyId),
     toFelt(input.noteId),
     toAddress(input.token, "token"),
     toU128Felt(input.amount, "amount"),
     toFelt(input.nonce),
+    toFelt(input.termsHash),
   ];
 }
 
 /**
- * The message a subject signs to authorise one specific settlement.
+ * The message a subject signs to authorise one specific leg, at one specific gate.
  *
- * Holding a credential is not the same as authorising a payment: the credential says who the
- * subject is, this signature says that *this* subject wants *this* value moved under *this* policy
- * at *this* gate, once.
- *
- * `amount` is the plaintext balance the pool hands the gate, so a relayer cannot inflate a
- * settlement past what the subject signed for. `nonce` is consumed per
- * `(subject_public_key, nonce)` and is what makes it once. Since `:V2` the chain id and the gate
- * address are inside the preimage too, so a signature cannot be carried to a second deployment
- * enforcing the same `policy_id`.
+ * Eleven elements. Holding a credential is not the same as authorising a payment: the credential
+ * says who the subject is, this says that this subject wants this value moved, on this leg, under
+ * this policy, at this contract, through this pool, once.
  */
 export function subjectActionHash(input: SubjectActionHashInput): Felt {
   return poseidon(subjectActionPreimage(input));
