@@ -61,6 +61,21 @@ pub mod gate {
     pub const OVER_CAP: felt252 = 'CORDON_OVER_CAP';
     /// The settlement would push this subject past the policy's per-epoch aggregate.
     pub const OVER_VELOCITY: felt252 = 'CORDON_OVER_VELOCITY';
+    /// The transaction fills a different open note than the one the subject bound their
+    /// authorisation to.
+    pub const NOTE_MISMATCH: felt252 = 'CORDON_NOTE_MISMATCH';
+    /// The authorisation's own deadline has passed.
+    pub const AUTH_EXPIRED: felt252 = 'CORDON_AUTH_EXPIRED';
+    /// An authorisation that names no note must carry a deadline, because a published one can be
+    /// pointed at somebody else's note until it dies.
+    pub const NEEDS_DEADLINE: felt252 = 'CORDON_NEEDS_DEADLINE';
+    /// An unbound authorisation's deadline is further out than the gate is willing to accept.
+    pub const WINDOW_TOO_LONG: felt252 = 'CORDON_WINDOW_TOO_LONG';
+    /// The resolved note id collides with the `NOTE_ANY` sentinel. Astronomically improbable;
+    /// checked so the sentinel can never be forged into a real binding.
+    pub const NOTE_IS_SENTINEL: felt252 = 'CORDON_NOTE_IS_SENTINEL';
+    /// The funding leg fills no note, so its binding is knowable and must be given.
+    pub const FUND_NEEDS_BINDING: felt252 = 'CORDON_FUND_NEEDS_BINDING';
 }
 
 /// Refusals specific to two-step settlement — the `Fund`, `Claim` and `Refund` legs.

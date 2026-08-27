@@ -45,14 +45,26 @@ pub mod domain_separation {
     /// Tag for the issuer-signed credential hash.
     pub const CREDENTIAL_TAG: felt252 = 'CORDON_CREDENTIAL:V1';
     /// Tag for the subject-signed action hash. `:V2` added the chain id and the gate address;
-    /// `:V3` added the pool address, the leg tag and the settlement terms.
-    pub const SUBJECT_ACTION_TAG: felt252 = 'CORDON_SUBJECT_ACTION:V3';
+    /// `:V3` added the pool address, the leg tag and the settlement terms; `:V4` replaced the raw
+    /// note id with a note *binding* and added the authorisation's own deadline.
+    pub const SUBJECT_ACTION_TAG: felt252 = 'CORDON_SUBJECT_ACTION:V4';
     /// Tag for the nested settlement-terms hash carried inside an action hash.
     ///
     /// A nested hash gets its own tag so that its digest can never be mistaken for, or collide
     /// with, a hash of some other structure that happens to have four felts in it.
     pub const SETTLEMENT_TERMS_TAG: felt252 = 'CORDON_SETTLEMENT_TERMS:V1';
 }
+
+/// The sentinel a subject signs in place of a note id when they cannot know one.
+///
+/// On the Wallet API route the note id is substituted by the wallet at submission time and derives
+/// from a channel key the application never sees, so there are flows in which the signer genuinely
+/// cannot name their own destination. `NOTE_ANY` lets them say so **in the message they sign**,
+/// rather than the gate quietly dropping the binding on their behalf.
+///
+/// It is a weaker authorisation and the signer can see that it is. See
+/// [`subject_action_hash`] for exactly what it costs.
+pub const NOTE_ANY: felt252 = 'CORDON_NOTE_ANY';
 
 /// Leg tags. These identify which `GateOperation` an authorisation is for.
 ///
@@ -146,13 +158,14 @@ pub fn quoted_settlement_hash(settlement_id: felt252) -> felt252 {
 ///
 /// ```text
 /// subject_action_hash = poseidon_hash_span([
-///     'CORDON_SUBJECT_ACTION:V3',  // domain tag
+///     'CORDON_SUBJECT_ACTION:V4',  // domain tag
 ///     chain_id,                    // felt252, get_tx_info().unbox().chain_id
 ///     gate_address,                // ContractAddress -> felt252, the verifying PolicyGate
 ///     pool_address,                // ContractAddress -> felt252, the pool that will pull
 ///     leg,                         // felt252, one of `legs::*`
 ///     policy_id,                   // felt252
-///     note_id,                     // felt252, the open note to fill (0 on Fund)
+///     note_binding,                // felt252, the open note to fill, or `NOTE_ANY`
+///     valid_until,                 // u64 -> felt252, unix seconds; 0 means no deadline
 ///     token,                       // ContractAddress -> felt252
 ///     amount,                      // u128 -> felt252, token base units
 ///     nonce,                       // felt252, chosen by the subject
@@ -160,12 +173,40 @@ pub fn quoted_settlement_hash(settlement_id: felt252) -> felt252 {
 /// ])
 /// ```
 ///
-/// Eleven elements. Holding a credential is not the same as authorising a payment: the credential
+/// Twelve elements. Holding a credential is not the same as authorising a payment: the credential
 /// says who the subject is, and this says that this subject wants this value moved, on this leg,
-/// under this policy, at this contract, through this pool, once.
+/// under this policy, at this contract, through this pool, into this note, before this time, once.
 ///
-/// - `chain_id` and `gate_address` stop the signature travelling to another network or another
-///   deployment.
+/// ## `note_binding`, and why it is not simply the note id
+///
+/// The destination is what a stolen authorisation would be redirected to, so binding it is the
+/// only thing that makes an authorisation useless to a thief. The problem is that on the Wallet
+/// API route the note id does not exist when the subject signs: the application submits the
+/// literal `"${openNoteIds[0]}"` and the wallet substitutes the resolved felt, which derives from
+/// a channel key — and therefore from the wallet's private key — that the application never
+/// sees.
+///
+/// So `note_binding` is whichever of two things the signer can honestly say:
+///
+/// - **the note id** — the gate asserts the transaction fills exactly that note. An authorisation
+///   published before it was consumed is then worthless to anyone else: a thief would have to
+///   create a note with that id, and a note id commits to its owner's channel key, so they cannot.
+///   This is the mode to use, and it is reachable: `strk20PrepareInvoke` returns a fully resolved
+///   call, so an application can prepare once to learn the note, sign, and prepare again to submit.
+/// - **[`NOTE_ANY`]** — the gate accepts whichever note the transaction fills. Necessary where
+/// the
+///   resolved id cannot be obtained before signing, and **materially weaker**: an authorisation
+///   that becomes public before it is consumed can be pointed at the thief's own note. That is not
+///   hypothetical — a reverted transaction is included on Starknet with its calldata, and a
+///   revert does not burn the nonce, so a failed payment publishes a live authorisation. The gate
+///   refuses this mode without a deadline and caps how far out that deadline may be, which bounds
+///   the window to the seconds a legitimate submission needs rather than leaving it open forever.
+///
+/// Either way the choice is inside the signed message, so a subject can see which one they made.
+///
+/// ## The rest
+///
+/// - `chain_id` and `gate_address` stop the signature travelling to another network or deployment.
 /// - `pool_address` stops it being executed against a different pool — and, since the gate only
 ///   ever approves the pool it was constructed with, keeps the signed message and the actual
 ///   recipient of the allowance in agreement.
@@ -173,6 +214,8 @@ pub fn quoted_settlement_hash(settlement_id: felt252) -> felt252 {
 /// - `amount` is the value the subject agreed to move; the gate takes it from the signed
 ///   authorisation and checks its balance covers it, rather than inferring it from a balance
 ///   anyone can change.
+/// - `valid_until` bounds how long an authorisation stays live once it is public. Zero means no
+///   deadline, which is only permitted when `note_binding` names a note.
 /// - `terms_hash` covers everything else a settlement decides.
 /// - `nonce`, consumed per `(subject_public_key, nonce)` across every leg, makes it once.
 pub fn subject_action_hash(
@@ -181,7 +224,8 @@ pub fn subject_action_hash(
     pool_address: ContractAddress,
     leg: felt252,
     policy_id: felt252,
-    note_id: felt252,
+    note_binding: felt252,
+    valid_until: u64,
     token: ContractAddress,
     amount: u128,
     nonce: felt252,
@@ -190,8 +234,8 @@ pub fn subject_action_hash(
     poseidon_hash_span(
         [
             domain_separation::SUBJECT_ACTION_TAG, chain_id, gate_address.into(),
-            pool_address.into(), leg, policy_id, note_id, token.into(), amount.into(), nonce,
-            terms_hash,
+            pool_address.into(), leg, policy_id, note_binding, valid_until.into(), token.into(),
+            amount.into(), nonce, terms_hash,
         ]
             .span(),
     )

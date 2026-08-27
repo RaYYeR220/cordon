@@ -153,6 +153,16 @@ pub struct SubjectAuthorization {
     pub policy_id: felt252,
     /// The issuer-signed credential.
     pub credential: Credential,
+    /// The open note this authorisation is for, or
+    /// [`NOTE_ANY`](crate::hashing::NOTE_ANY) when the signer could not know it.
+    ///
+    /// Naming the note is what makes a published authorisation useless to a thief: they would have
+    /// to create a note with that id, and a note id commits to its owner's channel key. `NOTE_ANY`
+    /// gives that up, so the gate demands a deadline in exchange and caps how far out it may be.
+    pub note_binding: felt252,
+    /// Unix seconds after which this authorisation is dead. Zero means no deadline, which is only
+    /// allowed when `note_binding` names a note.
+    pub valid_until: u64,
     /// The value this authorisation covers, in token base units.
     ///
     /// The gate takes the amount from here rather than from its own `balance_of`. `balance_of` is
@@ -206,6 +216,16 @@ pub struct ClaimTerms {
     pub settlement_id: felt252,
     /// The payee's issuer-signed credential. Its subject key must match the one the payer named.
     pub credential: Credential,
+    /// The open note this authorisation is for, or
+    /// [`NOTE_ANY`](crate::hashing::NOTE_ANY) when the signer could not know it.
+    ///
+    /// Naming the note is what makes a published authorisation useless to a thief: they would have
+    /// to create a note with that id, and a note id commits to its owner's channel key. `NOTE_ANY`
+    /// gives that up, so the gate demands a deadline in exchange and caps how far out it may be.
+    pub note_binding: felt252,
+    /// Unix seconds after which this authorisation is dead. Zero means no deadline, which is only
+    /// allowed when `note_binding` names a note.
+    pub valid_until: u64,
     /// `r` of the payee's signature over the action hash.
     pub sig_r: felt252,
     /// `s` of the same signature.
@@ -219,6 +239,16 @@ pub struct ClaimTerms {
 pub struct RefundTerms {
     /// Which settlement to unwind. Bound into the payer's signature.
     pub settlement_id: felt252,
+    /// The open note this authorisation is for, or
+    /// [`NOTE_ANY`](crate::hashing::NOTE_ANY) when the signer could not know it.
+    ///
+    /// Naming the note is what makes a published authorisation useless to a thief: they would have
+    /// to create a note with that id, and a note id commits to its owner's channel key. `NOTE_ANY`
+    /// gives that up, so the gate demands a deadline in exchange and caps how far out it may be.
+    pub note_binding: felt252,
+    /// Unix seconds after which this authorisation is dead. Zero means no deadline, which is only
+    /// allowed when `note_binding` names a note.
+    pub valid_until: u64,
     /// `r` of the payer's signature over the action hash.
     pub sig_r: felt252,
     /// `s` of the same signature.

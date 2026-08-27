@@ -67,7 +67,7 @@ pub mod PolicyGate {
         ZERO_ADDRESS, gate as errors, settlement as settlement_errors, sweep as sweep_errors,
     };
     use crate::hashing;
-    use crate::hashing::legs;
+    use crate::hashing::{NOTE_ANY, legs};
     use crate::interfaces::{
         IIssuerRegistryDispatcher, IIssuerRegistryDispatcherTrait, IPolicyGate,
         IPolicyRegistryDispatcher, IPolicyRegistryDispatcherTrait, IRevocationRegistryDispatcher,
@@ -77,6 +77,14 @@ pub mod PolicyGate {
         ClaimTerms, Credential, FundTerms, GateOperation, OpenNoteDeposit, Policy, RefundTerms,
         Settlement, SettlementStatus, SubjectAuthorization,
     };
+
+    /// How far ahead an authorisation that names no note may set its deadline.
+    ///
+    /// An unbound authorisation can be redirected to another note by anyone who obtains it before
+    /// it is consumed, so its life has to be measured in the seconds a legitimate submission
+    /// needs, not in hours. Ten minutes is generous for a wallet round trip and still turns
+    /// "replayable until the nonce burns" into a window an attacker has to be watching for.
+    const MAX_UNBOUND_WINDOW: u64 = 600;
 
     component!(path: OwnableComponent, storage: ownable, event: OwnableEvent);
 
@@ -427,6 +435,9 @@ pub mod PolicyGate {
             } = terms;
 
             assert(note_id.is_zero(), settlement_errors::NOTE_ID_NOT_ZERO);
+            // The funding leg's destination is "no note", which every payer can name, so the
+            // weaker unbound mode is never needed and is not accepted here.
+            assert(payer.note_binding != NOTE_ANY, errors::FUND_NEEDS_BINDING);
             assert(settlement_id.is_non_zero(), settlement_errors::ZERO_SETTLEMENT_ID);
             assert(payee_subject_key.is_non_zero(), settlement_errors::ZERO_PAYEE);
             let slot = self.settlements.entry(settlement_id);
@@ -524,7 +535,9 @@ pub mod PolicyGate {
             pool: ContractAddress,
             note_id: felt252,
         ) -> Span<OpenNoteDeposit> {
-            let ClaimTerms { settlement_id, credential, sig_r, sig_s, nonce } = terms;
+            let ClaimTerms {
+                settlement_id, credential, note_binding, valid_until, sig_r, sig_s, nonce,
+            } = terms;
 
             let slot = self.settlements.entry(settlement_id);
             let settlement = slot.read();
@@ -548,6 +561,8 @@ pub mod PolicyGate {
             let payee = SubjectAuthorization {
                 policy_id: settlement.payee_claim_policy_id,
                 credential,
+                note_binding,
+                valid_until,
                 amount: settlement.amount,
                 sig_r,
                 sig_s,
@@ -600,7 +615,9 @@ pub mod PolicyGate {
             pool: ContractAddress,
             note_id: felt252,
         ) -> Span<OpenNoteDeposit> {
-            let RefundTerms { settlement_id, sig_r, sig_s, nonce } = terms;
+            let RefundTerms {
+                settlement_id, note_binding, valid_until, sig_r, sig_s, nonce,
+            } = terms;
 
             let slot = self.settlements.entry(settlement_id);
             let settlement = slot.read();
@@ -612,6 +629,7 @@ pub mod PolicyGate {
             slot.status.write(SettlementStatus::Refunded);
             self._debit_ledger(token, settlement.amount);
 
+            self._assert_note_binding(note_binding, note_id, valid_until);
             self
                 ._assert_subject_signature(
                     settlement.payer_subject_key,
@@ -620,7 +638,8 @@ pub mod PolicyGate {
                     pool,
                     legs::REFUND,
                     settlement.payer_policy_id,
-                    note_id,
+                    note_binding,
+                    valid_until,
                     token,
                     settlement.amount,
                     nonce,
@@ -656,6 +675,10 @@ pub mod PolicyGate {
         ) {
             let credential = authorization.credential;
             self._assert_credential_valid(credential, policy);
+            self
+                ._assert_note_binding(
+                    *authorization.note_binding, note_id, *authorization.valid_until,
+                );
 
             self
                 ._assert_subject_signature(
@@ -665,7 +688,8 @@ pub mod PolicyGate {
                     pool,
                     leg,
                     *authorization.policy_id,
-                    note_id,
+                    *authorization.note_binding,
+                    *authorization.valid_until,
                     token,
                     amount,
                     *authorization.nonce,
@@ -737,7 +761,8 @@ pub mod PolicyGate {
             pool: ContractAddress,
             leg: felt252,
             policy_id: felt252,
-            note_id: felt252,
+            note_binding: felt252,
+            valid_until: u64,
             token: ContractAddress,
             amount: u128,
             nonce: felt252,
@@ -751,7 +776,8 @@ pub mod PolicyGate {
                         pool_address: pool,
                         :leg,
                         :policy_id,
-                        :note_id,
+                        :note_binding,
+                        :valid_until,
                         :token,
                         :amount,
                         :nonce,
@@ -763,6 +789,41 @@ pub mod PolicyGate {
                 ),
                 errors::BAD_SUBJECT_SIG,
             );
+        }
+
+        /// Step 9a: the transaction fills the note the subject signed for, and the
+        /// authorisation has not gone stale.
+        ///
+        /// The destination is the one thing a stolen authorisation would be redirected to, so
+        /// naming it is what makes the authorisation useless to anyone else. A thief cannot create
+        /// a note with someone else's id — a note id commits to its owner's channel key — so a
+        /// bound authorisation that becomes public is worth nothing to them.
+        ///
+        /// `NOTE_ANY` exists because on the Wallet API route the resolved note id is substituted
+        /// by the wallet at submission time and the application may have no way to learn it before
+        /// signing. It is the honest weaker option, stated in the signed message rather than
+        /// applied silently, and the gate charges for it: a deadline is mandatory and cannot be
+        /// further out than `MAX_UNBOUND_WINDOW`. That matters because a *reverted* transaction is
+        /// still included on chain with its calldata, and a revert does not burn the nonce — so a
+        /// failed payment publishes a live authorisation, and without a deadline it would stay
+        /// redirectable indefinitely.
+        fn _assert_note_binding(
+            self: @ContractState, note_binding: felt252, note_id: felt252, valid_until: u64,
+        ) {
+            let now = get_block_timestamp();
+            if valid_until.is_non_zero() {
+                assert(now <= valid_until, errors::AUTH_EXPIRED);
+            }
+
+            if note_binding == NOTE_ANY {
+                assert(valid_until.is_non_zero(), errors::NEEDS_DEADLINE);
+                // `now <= valid_until` above makes this subtraction safe.
+                assert(valid_until - now <= MAX_UNBOUND_WINDOW, errors::WINDOW_TOO_LONG);
+                // A resolved note id must never be mistakable for the sentinel.
+                assert(note_id != NOTE_ANY, errors::NOTE_IS_SENTINEL);
+            } else {
+                assert(note_binding == note_id, errors::NOTE_MISMATCH);
+            }
         }
 
         /// Burns a nonce, or refuses if it is already spent.
