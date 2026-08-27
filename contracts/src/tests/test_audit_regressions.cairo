@@ -24,7 +24,7 @@ use crate::interfaces::{
 use crate::mocks::mock_erc20::{IMockERC20MintDispatcher, IMockERC20MintDispatcherTrait};
 use crate::tests::common::{
     CHAIN_ID, CLAIM, CLAIM_POLICY_ID, CREDENTIAL_ID, Cordon, CordonTrait, EXPIRES_AT, ISSUER_ID,
-    MAX_AMOUNT, NONCE, NOTE_ID, PAYEE_CLAIM, PAYEE_NONCE, PAYEE_NOTE_ID, POLICY_ID,
+    MAX_AMOUNT, NONCE, NO_DEADLINE, PAYEE_CLAIM, PAYEE_NONCE, PAYEE_NOTE_ID, POLICY_ID,
     SETTLEMENT_EXPIRES_AT, SETTLEMENT_ID, SETTLE_AMOUNT, default_claim_policy, default_policy,
     owner, setup, setup_with_policies, stranger,
 };
@@ -107,6 +107,7 @@ fn c01_a_caller_naming_itself_as_the_pool_cannot_drain_escrow() {
                 legs::CLAIM,
                 CLAIM_POLICY_ID,
                 ATTACKER_NOTE_ID,
+                NO_DEADLINE,
                 cordon.token,
                 SETTLE_AMOUNT,
                 ATTACKER_NONCE,
@@ -123,6 +124,8 @@ fn c01_a_caller_naming_itself_as_the_pool_cannot_drain_escrow() {
                 ClaimTerms {
                     settlement_id: SETTLEMENT_ID,
                     credential: attacker_credential(@cordon),
+                    note_binding: ATTACKER_NOTE_ID,
+                    valid_until: NO_DEADLINE,
                     sig_r,
                     sig_s,
                     nonce: ATTACKER_NONCE,
@@ -153,6 +156,7 @@ fn c01_a_matching_caller_and_pool_address_pair_is_still_refused() {
                 legs::DIRECT,
                 POLICY_ID,
                 ATTACKER_NOTE_ID,
+                NO_DEADLINE,
                 cordon.token,
                 250,
                 ATTACKER_NONCE,
@@ -169,6 +173,8 @@ fn c01_a_matching_caller_and_pool_address_pair_is_still_refused() {
                 SubjectAuthorization {
                     policy_id: POLICY_ID,
                     credential: attacker_payer_credential(@cordon),
+                    note_binding: ATTACKER_NOTE_ID,
+                    valid_until: NO_DEADLINE,
                     amount: 250,
                     sig_r,
                     sig_s,
@@ -214,6 +220,8 @@ fn c01_a_victims_own_claim_calldata_cannot_be_redirected() {
                 ClaimTerms {
                     settlement_id: SETTLEMENT_ID,
                     credential: cordon.payee_credential(),
+                    note_binding: PAYEE_NOTE_ID,
+                    valid_until: NO_DEADLINE,
                     sig_r,
                     sig_s,
                     nonce: PAYEE_NONCE,
@@ -249,6 +257,7 @@ fn c01_a_stale_allowance_cannot_be_armed() {
                 legs::DIRECT,
                 POLICY_ID,
                 ATTACKER_NOTE_ID,
+                NO_DEADLINE,
                 cordon.token,
                 1000,
                 ATTACKER_NONCE,
@@ -265,6 +274,8 @@ fn c01_a_stale_allowance_cannot_be_armed() {
                 SubjectAuthorization {
                     policy_id: POLICY_ID,
                     credential: attacker_payer_credential(@cordon),
+                    note_binding: ATTACKER_NOTE_ID,
+                    valid_until: NO_DEADLINE,
                     amount: 1000,
                     sig_r,
                     sig_s,
@@ -343,6 +354,8 @@ fn c02_a_credentialed_stranger_cannot_take_a_settlement() {
                 ClaimTerms {
                     settlement_id: SETTLEMENT_ID,
                     credential: attacker_credential(@cordon),
+                    note_binding: ATTACKER_NOTE_ID,
+                    valid_until: NO_DEADLINE,
                     sig_r,
                     sig_s,
                     nonce: ATTACKER_NONCE,
@@ -531,6 +544,8 @@ fn c03_stranded_dust_cannot_be_stretched_to_cover_escrow() {
                 SubjectAuthorization {
                     policy_id: POLICY_ID,
                     credential: attacker_payer_credential(@cordon),
+                    note_binding: ATTACKER_NOTE_ID,
+                    valid_until: NO_DEADLINE,
                     amount: SETTLE_AMOUNT + 100,
                     sig_r,
                     sig_s,
@@ -560,8 +575,9 @@ fn c03_stranded_dust_cannot_be_stretched_to_cover_escrow() {
 fn h01_a_direct_authorisation_cannot_be_executed_as_a_fund() {
     let cordon = setup();
 
-    // Exactly what the payer signs for a `Direct` payment.
-    let payer = cordon.direct_auth(SETTLE_AMOUNT, NONCE, NOTE_ID);
+    // Exactly what the payer signs for a `Direct` payment. The note binding is `0` so that the
+    // binding check cannot be what refuses this: the leg tag has to carry it on its own.
+    let payer = cordon.direct_auth_bound(SETTLE_AMOUNT, NONCE, 0, NO_DEADLINE);
 
     cordon
         .apply(
@@ -599,6 +615,8 @@ fn h01_fund_terms_cannot_be_swapped_after_signing() {
     let payer = SubjectAuthorization {
         policy_id: POLICY_ID,
         credential: cordon.credential(),
+        note_binding: 0,
+        valid_until: NO_DEADLINE,
         amount: SETTLE_AMOUNT,
         sig_r,
         sig_s,

@@ -19,7 +19,7 @@ use crate::mocks::mock_erc20::{IMockERC20MintDispatcher, IMockERC20MintDispatche
 use crate::mocks::mock_pool::IMockPoolDispatcherTrait;
 use crate::tests::common::{
     CLAIM, CREDENTIAL_ID, CordonTrait, EPOCH_LENGTH, EXPIRES_AT, IMPOSTER_SECRET, ISSUER_ID,
-    MAX_AMOUNT, NONCE, NOTE_ID, OTHER_ISSUER_ID, POLICY_ID, SETTLE_AMOUNT, START_TIME,
+    MAX_AMOUNT, NONCE, NOTE_ID, NO_DEADLINE, OTHER_ISSUER_ID, POLICY_ID, SETTLE_AMOUNT, START_TIME,
     default_policy, issuer_operator, owner, setup, setup_with_policy, stranger,
 };
 use crate::types::{Credential, GateOperation, OpenNoteDeposit, SubjectAuthorization};
@@ -194,6 +194,8 @@ fn a_caller_naming_itself_as_the_pool_is_refused() {
                 SubjectAuthorization {
                     policy_id: POLICY_ID,
                     credential,
+                    note_binding: NOTE_ID,
+                    valid_until: NO_DEADLINE,
                     amount: SETTLE_AMOUNT,
                     sig_r,
                     sig_s,
@@ -281,6 +283,8 @@ fn a_policy_pinned_to_another_token_is_refused() {
             SubjectAuthorization {
                 policy_id: 'PAY_OTHER_ONLY',
                 credential,
+                note_binding: NOTE_ID,
+                valid_until: NO_DEADLINE,
                 amount: SETTLE_AMOUNT,
                 sig_r,
                 sig_s,
@@ -446,9 +450,11 @@ fn an_amount_the_subject_did_not_sign_for_is_refused() {
     cordon.settle_auth(SETTLE_AMOUNT + 1, auth);
 }
 
-/// 9b. A signature over a different note is not a signature over this one.
+/// 9b. An authorisation that names one note cannot be used to fill another. This is the check
+///     that makes a published authorisation worthless to a thief: they would have to create a
+///     note with the signer's id, and a note id commits to its owner's channel key.
 #[test]
-#[should_panic(expected: 'CORDON_BAD_SUBJECT_SIG')]
+#[should_panic(expected: 'CORDON_NOTE_MISMATCH')]
 fn a_signature_bound_to_another_note_is_refused() {
     let cordon = setup();
 
@@ -471,7 +477,14 @@ fn a_signature_made_for_another_leg_is_refused() {
         .settle_auth(
             SETTLE_AMOUNT,
             SubjectAuthorization {
-                policy_id: POLICY_ID, credential, amount: SETTLE_AMOUNT, sig_r, sig_s, nonce: NONCE,
+                policy_id: POLICY_ID,
+                credential,
+                note_binding: NOTE_ID,
+                valid_until: NO_DEADLINE,
+                amount: SETTLE_AMOUNT,
+                sig_r,
+                sig_s,
+                nonce: NONCE,
             },
         );
 }
@@ -529,7 +542,14 @@ fn a_signature_bound_to_another_gate_is_refused() {
         .settle_auth(
             SETTLE_AMOUNT,
             SubjectAuthorization {
-                policy_id: POLICY_ID, credential, amount: SETTLE_AMOUNT, sig_r, sig_s, nonce: NONCE,
+                policy_id: POLICY_ID,
+                credential,
+                note_binding: NOTE_ID,
+                valid_until: NO_DEADLINE,
+                amount: SETTLE_AMOUNT,
+                sig_r,
+                sig_s,
+                nonce: NONCE,
             },
         );
 }
@@ -552,6 +572,7 @@ fn a_signature_bound_to_another_pool_is_refused() {
                 legs::DIRECT,
                 POLICY_ID,
                 NOTE_ID,
+                NO_DEADLINE,
                 cordon.token,
                 SETTLE_AMOUNT,
                 NONCE,
@@ -564,7 +585,14 @@ fn a_signature_bound_to_another_pool_is_refused() {
         .settle_auth(
             SETTLE_AMOUNT,
             SubjectAuthorization {
-                policy_id: POLICY_ID, credential, amount: SETTLE_AMOUNT, sig_r, sig_s, nonce: NONCE,
+                policy_id: POLICY_ID,
+                credential,
+                note_binding: NOTE_ID,
+                valid_until: NO_DEADLINE,
+                amount: SETTLE_AMOUNT,
+                sig_r,
+                sig_s,
+                nonce: NONCE,
             },
         );
 }

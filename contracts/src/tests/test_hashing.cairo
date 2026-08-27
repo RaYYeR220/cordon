@@ -10,7 +10,8 @@ use core::poseidon::poseidon_hash_span;
 use starknet::ContractAddress;
 use crate::hashing::domain_separation::{CREDENTIAL_TAG, SETTLEMENT_TERMS_TAG, SUBJECT_ACTION_TAG};
 use crate::hashing::{
-    credential_hash, legs, quoted_settlement_hash, settlement_terms_hash, subject_action_hash,
+    NOTE_ANY, credential_hash, legs, quoted_settlement_hash, settlement_terms_hash,
+    subject_action_hash,
 };
 use crate::types::Credential;
 
@@ -20,9 +21,11 @@ pub const FIXTURE_CREDENTIAL_HASH: felt252 =
 /// The pinned settlement-terms hash of the fixture `Fund`.
 pub const FIXTURE_TERMS_HASH: felt252 =
     0x4d1dba11f958448bb5b3d4b7e39ebba33b79ca80ea191539bc1868a628f7d3d;
+/// The deadline the fixture authorisation carries.
+pub const FIXTURE_VALID_UNTIL: u64 = 1_800_000_300;
 /// The pinned action hash of [`fixture_action_hash`].
 pub const FIXTURE_ACTION_HASH: felt252 =
-    0x699b15a2d12d1e8df2bc0aaafd30dfdf1eb8b48380496855dc89b85ada49c83;
+    0x15954b6b284f2575533fda03c443131d11a5217061cf1cae05b5055af9c6a22;
 
 /// The fixture credential. Every field is a value a human can read back out of a hex dump.
 fn fixture_credential() -> Credential {
@@ -73,6 +76,7 @@ fn fixture_action_hash() -> felt252 {
         legs::FUND,
         'PAY_ACCREDITED_V1',
         0,
+        FIXTURE_VALID_UNTIL,
         fixture_token(),
         400,
         'nonce_0',
@@ -138,23 +142,24 @@ fn terms_preimage_is_the_documented_field_list() {
     assert_eq!(poseidon_hash_span(preimage), fixture_terms_hash());
 }
 
-/// The action preimage, likewise spelled out — eleven elements since `:V3`.
+/// The action preimage, likewise spelled out — twelve elements since `:V4`.
 #[test]
 fn action_preimage_is_the_documented_field_list() {
-    let tag: felt252 = 0x434f52444f4e5f5355424a4543545f414354494f4e3a5633;
+    let tag: felt252 = 0x434f52444f4e5f5355424a4543545f414354494f4e3a5634;
     let chain_id_sn_main: felt252 = 0x534e5f4d41494e;
     let gate_address: felt252 = 0x02c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de001;
     let pool_address: felt252 = 0x0900100c0011ea1100c0011ea1100c0011ea1100c0011ea1100c0011ea11002;
     let leg_fund: felt252 = 0x434f52444f4e5f4c45475f46554e44;
     let policy_id_pay_accredited_v1: felt252 = 0x5041595f414343524544495445445f5631;
-    let note_id: felt252 = 0;
+    let note_binding: felt252 = 0;
     let strk_token: felt252 = 0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d;
     let amount: felt252 = 400;
     let nonce_nonce_0: felt252 = 0x6e6f6e63655f30;
+    let valid_until: felt252 = 1_800_000_300;
 
     let preimage = [
         tag, chain_id_sn_main, gate_address, pool_address, leg_fund, policy_id_pay_accredited_v1,
-        note_id, strk_token, amount, nonce_nonce_0, FIXTURE_TERMS_HASH,
+        note_binding, valid_until, strk_token, amount, nonce_nonce_0, FIXTURE_TERMS_HASH,
     ]
         .span();
 
@@ -220,56 +225,226 @@ fn every_action_field_moves_the_hash() {
 
     assert_ne!(
         subject_action_hash(
-            'SN_SEPOLIA', gate, pool, legs::FUND, policy, 0, token, 400, 'nonce_0', terms,
+            'SN_SEPOLIA',
+            gate,
+            pool,
+            legs::FUND,
+            policy,
+            0,
+            FIXTURE_VALID_UNTIL,
+            token,
+            400,
+            'nonce_0',
+            terms,
         ),
         base,
     );
     assert_ne!(
         subject_action_hash(
-            chain, other, pool, legs::FUND, policy, 0, token, 400, 'nonce_0', terms,
+            chain,
+            other,
+            pool,
+            legs::FUND,
+            policy,
+            0,
+            FIXTURE_VALID_UNTIL,
+            token,
+            400,
+            'nonce_0',
+            terms,
         ),
         base,
     );
     assert_ne!(
         subject_action_hash(
-            chain, gate, other, legs::FUND, policy, 0, token, 400, 'nonce_0', terms,
+            chain,
+            gate,
+            other,
+            legs::FUND,
+            policy,
+            0,
+            FIXTURE_VALID_UNTIL,
+            token,
+            400,
+            'nonce_0',
+            terms,
         ),
         base,
     );
     assert_ne!(
         subject_action_hash(
-            chain, gate, pool, legs::DIRECT, policy, 0, token, 400, 'nonce_0', terms,
+            chain,
+            gate,
+            pool,
+            legs::DIRECT,
+            policy,
+            0,
+            FIXTURE_VALID_UNTIL,
+            token,
+            400,
+            'nonce_0',
+            terms,
         ),
         base,
     );
     assert_ne!(
         subject_action_hash(
-            chain, gate, pool, legs::FUND, 'PAY_KYC_L2_V1', 0, token, 400, 'nonce_0', terms,
+            chain,
+            gate,
+            pool,
+            legs::FUND,
+            'PAY_KYC_L2_V1',
+            0,
+            FIXTURE_VALID_UNTIL,
+            token,
+            400,
+            'nonce_0',
+            terms,
         ),
         base,
     );
     assert_ne!(
         subject_action_hash(
-            chain, gate, pool, legs::FUND, policy, 'note_0', token, 400, 'nonce_0', terms,
+            chain,
+            gate,
+            pool,
+            legs::FUND,
+            policy,
+            'note_0',
+            FIXTURE_VALID_UNTIL,
+            token,
+            400,
+            'nonce_0',
+            terms,
         ),
         base,
     );
     assert_ne!(
-        subject_action_hash(chain, gate, pool, legs::FUND, policy, 0, other, 400, 'nonce_0', terms),
+        subject_action_hash(
+            chain,
+            gate,
+            pool,
+            legs::FUND,
+            policy,
+            0,
+            FIXTURE_VALID_UNTIL,
+            other,
+            400,
+            'nonce_0',
+            terms,
+        ),
         base,
     );
     assert_ne!(
-        subject_action_hash(chain, gate, pool, legs::FUND, policy, 0, token, 401, 'nonce_0', terms),
+        subject_action_hash(
+            chain,
+            gate,
+            pool,
+            legs::FUND,
+            policy,
+            0,
+            FIXTURE_VALID_UNTIL,
+            token,
+            401,
+            'nonce_0',
+            terms,
+        ),
         base,
     );
     assert_ne!(
-        subject_action_hash(chain, gate, pool, legs::FUND, policy, 0, token, 400, 'nonce_1', terms),
+        subject_action_hash(
+            chain,
+            gate,
+            pool,
+            legs::FUND,
+            policy,
+            0,
+            FIXTURE_VALID_UNTIL,
+            token,
+            400,
+            'nonce_1',
+            terms,
+        ),
         base,
     );
     assert_ne!(
-        subject_action_hash(chain, gate, pool, legs::FUND, policy, 0, token, 400, 'nonce_0', 0),
+        subject_action_hash(
+            chain, gate, pool, legs::FUND, policy, 0, FIXTURE_VALID_UNTIL, token, 400, 'nonce_0', 0,
+        ),
         base,
     );
+    assert_ne!(
+        subject_action_hash(
+            chain,
+            gate,
+            pool,
+            legs::FUND,
+            policy,
+            0,
+            FIXTURE_VALID_UNTIL + 1,
+            token,
+            400,
+            'nonce_0',
+            terms,
+        ),
+        base,
+    );
+}
+
+/// The binding is what a redirection attack would have to forge, so it has to move the hash — and
+/// the `NOTE_ANY` sentinel has to be distinguishable from every real note id.
+#[test]
+fn the_note_binding_moves_the_hash_and_the_sentinel_is_distinct() {
+    let chain = 'SN_MAIN';
+    let gate = fixture_gate();
+    let pool = fixture_pool();
+    let policy = 'PAY_ACCREDITED_V1';
+    let token = fixture_token();
+
+    let bound = subject_action_hash(
+        chain,
+        gate,
+        pool,
+        legs::DIRECT,
+        policy,
+        'note_0',
+        FIXTURE_VALID_UNTIL,
+        token,
+        400,
+        'nonce_0',
+        0,
+    );
+    let other_note = subject_action_hash(
+        chain,
+        gate,
+        pool,
+        legs::DIRECT,
+        policy,
+        'note_1',
+        FIXTURE_VALID_UNTIL,
+        token,
+        400,
+        'nonce_0',
+        0,
+    );
+    let unbound = subject_action_hash(
+        chain,
+        gate,
+        pool,
+        legs::DIRECT,
+        policy,
+        NOTE_ANY,
+        FIXTURE_VALID_UNTIL,
+        token,
+        400,
+        'nonce_0',
+        0,
+    );
+
+    assert_ne!(bound, other_note);
+    assert_ne!(bound, unbound);
+    assert_ne!(other_note, unbound);
+    assert_eq!(NOTE_ANY, 'CORDON_NOTE_ANY');
 }
 
 /// The four leg tags are distinct, which is what stops one authorisation being executed as
@@ -315,6 +490,6 @@ fn domain_tags_are_distinct() {
 #[test]
 fn domain_tags_are_the_documented_versions() {
     assert_eq!(CREDENTIAL_TAG, 'CORDON_CREDENTIAL:V1');
-    assert_eq!(SUBJECT_ACTION_TAG, 'CORDON_SUBJECT_ACTION:V3');
+    assert_eq!(SUBJECT_ACTION_TAG, 'CORDON_SUBJECT_ACTION:V4');
     assert_eq!(SETTLEMENT_TERMS_TAG, 'CORDON_SETTLEMENT_TERMS:V1');
 }

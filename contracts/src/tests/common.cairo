@@ -48,7 +48,7 @@ pub const NONCE: felt252 = 'nonce_0';
 pub const PAYEE_NONCE: felt252 = 'nonce_p';
 pub const SETTLEMENT_ID: felt252 = 'stl_0';
 
-/// The chain the suite pretends to be on, so the `:V3` action hash is reproducible.
+/// The chain the suite pretends to be on, so the `:V4` action hash is reproducible.
 pub const CHAIN_ID: felt252 = 'SN_MAIN';
 
 /// One hour, in seconds. Long enough to be a realistic velocity window.
@@ -67,6 +67,16 @@ pub const EXPIRES_AT: u64 = START_TIME + 86_400;
 pub const CLAIM_WINDOW: u64 = EPOCH_LENGTH * 2;
 /// When the fixture settlement stops being claimable and starts being refundable.
 pub const SETTLEMENT_EXPIRES_AT: u64 = START_TIME + CLAIM_WINDOW;
+/// The gate's ceiling on how long an authorisation that names no note may live.
+pub const MAX_UNBOUND_WINDOW: u64 = 600;
+/// The deadline a bound authorisation carries: none.
+///
+/// An authorisation that names its destination note is not redirectable, so it does not need to
+/// die on a clock — the nonce is enough. Only the unbound mode is required to carry a deadline,
+/// and those tests set their own.
+pub const NO_DEADLINE: u64 = 0;
+/// A deadline comfortably inside the gate's ceiling, for the unbound-mode tests.
+pub const UNBOUND_DEADLINE: u64 = START_TIME + 300;
 
 pub fn owner() -> ContractAddress {
     'OWNER'.try_into().unwrap()
@@ -269,7 +279,25 @@ pub impl CordonImpl of CordonTrait {
         key: KeyPair<felt252, felt252>,
         leg: felt252,
         policy_id: felt252,
-        note_id: felt252,
+        note_binding: felt252,
+        amount: u128,
+        nonce: felt252,
+        terms_hash: felt252,
+    ) -> (felt252, felt252) {
+        self
+            .sign_action_until(
+                key, leg, policy_id, note_binding, NO_DEADLINE, amount, nonce, terms_hash,
+            )
+    }
+
+    /// The general form: any key, any binding, any deadline.
+    fn sign_action_until(
+        self: @Cordon,
+        key: KeyPair<felt252, felt252>,
+        leg: felt252,
+        policy_id: felt252,
+        note_binding: felt252,
+        valid_until: u64,
         amount: u128,
         nonce: felt252,
         terms_hash: felt252,
@@ -282,7 +310,8 @@ pub impl CordonImpl of CordonTrait {
                     (*self.pool).contract_address,
                     leg,
                     policy_id,
-                    note_id,
+                    note_binding,
+                    valid_until,
                     *self.token,
                     amount,
                     nonce,
@@ -296,10 +325,35 @@ pub impl CordonImpl of CordonTrait {
     fn direct_auth(
         self: @Cordon, amount: u128, nonce: felt252, note_id: felt252,
     ) -> SubjectAuthorization {
+        self.direct_auth_bound(amount, nonce, note_id, NO_DEADLINE)
+    }
+
+    /// A `Direct` authorisation with a caller-chosen binding and deadline.
+    fn direct_auth_bound(
+        self: @Cordon, amount: u128, nonce: felt252, note_binding: felt252, valid_until: u64,
+    ) -> SubjectAuthorization {
         let credential = self.credential();
         let (sig_r, sig_s) = self
-            .sign_action_as(*self.subject_key, legs::DIRECT, POLICY_ID, note_id, amount, nonce, 0);
-        SubjectAuthorization { policy_id: POLICY_ID, credential, amount, sig_r, sig_s, nonce }
+            .sign_action_until(
+                *self.subject_key,
+                legs::DIRECT,
+                POLICY_ID,
+                note_binding,
+                valid_until,
+                amount,
+                nonce,
+                0,
+            );
+        SubjectAuthorization {
+            policy_id: POLICY_ID,
+            credential,
+            note_binding,
+            valid_until,
+            amount,
+            sig_r,
+            sig_s,
+            nonce,
+        }
     }
 
     //
@@ -338,7 +392,14 @@ pub impl CordonImpl of CordonTrait {
             .settle_auth(
                 withdrawn,
                 SubjectAuthorization {
-                    policy_id: POLICY_ID, credential, amount, sig_r, sig_s, nonce,
+                    policy_id: POLICY_ID,
+                    credential,
+                    note_binding: NOTE_ID,
+                    valid_until: NO_DEADLINE,
+                    amount,
+                    sig_r,
+                    sig_s,
+                    nonce,
                 },
             )
     }
@@ -379,7 +440,14 @@ pub impl CordonImpl of CordonTrait {
         let (sig_r, sig_s) = self
             .sign_action_as(*self.subject_key, legs::FUND, POLICY_ID, 0, amount, nonce, terms_hash);
         let payer = SubjectAuthorization {
-            policy_id: POLICY_ID, credential: self.credential(), amount, sig_r, sig_s, nonce,
+            policy_id: POLICY_ID,
+            credential: self.credential(),
+            note_binding: 0,
+            valid_until: NO_DEADLINE,
+            amount,
+            sig_r,
+            sig_s,
+            nonce,
         };
         self
             .apply(
@@ -429,7 +497,17 @@ pub impl CordonImpl of CordonTrait {
             );
         self
             .apply(
-                GateOperation::Claim(ClaimTerms { settlement_id, credential, sig_r, sig_s, nonce }),
+                GateOperation::Claim(
+                    ClaimTerms {
+                        settlement_id,
+                        credential,
+                        note_binding: PAYEE_NOTE_ID,
+                        valid_until: NO_DEADLINE,
+                        sig_r,
+                        sig_s,
+                        nonce,
+                    },
+                ),
                 0,
                 PAYEE_NOTE_ID,
             )
@@ -460,7 +538,16 @@ pub impl CordonImpl of CordonTrait {
             );
         self
             .apply(
-                GateOperation::Refund(RefundTerms { settlement_id, sig_r, sig_s, nonce }),
+                GateOperation::Refund(
+                    RefundTerms {
+                        settlement_id,
+                        note_binding: NOTE_ID,
+                        valid_until: NO_DEADLINE,
+                        sig_r,
+                        sig_s,
+                        nonce,
+                    },
+                ),
                 0,
                 NOTE_ID,
             )

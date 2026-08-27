@@ -9,7 +9,7 @@ use openzeppelin::interfaces::token::erc20::{IERC20Dispatcher, IERC20DispatcherT
 use snforge_std::{
     start_cheat_block_timestamp_global, start_cheat_caller_address, stop_cheat_caller_address,
 };
-use crate::hashing::legs;
+use crate::hashing::{NOTE_ANY, legs};
 use crate::interfaces::{
     IIssuerRegistryDispatcherTrait, IPolicyGateDispatcherTrait, IPolicyRegistryDispatcherTrait,
     IRevocationRegistryDispatcherTrait,
@@ -18,10 +18,10 @@ use crate::mocks::mock_erc20::{IMockERC20MintDispatcher, IMockERC20MintDispatche
 use crate::mocks::mock_pool::IMockPoolDispatcherTrait;
 use crate::tests::common::{
     CLAIM_POLICY_ID, CLAIM_WINDOW, CREDENTIAL_ID, CordonTrait, EPOCH_LENGTH, EXPIRES_AT, ISSUER_ID,
-    MAX_AMOUNT, MAX_PER_EPOCH, NOTE_ID, PAYEE_CLAIM, PAYEE_CREDENTIAL_ID, PAYEE_NONCE,
-    PAYEE_NOTE_ID, POLICY_ID, SETTLEMENT_EXPIRES_AT, SETTLEMENT_ID, SETTLE_AMOUNT, START_TIME,
-    default_claim_policy, default_policy, issuer_operator, owner, setup, setup_with_policies,
-    setup_with_policy, stranger,
+    MAX_AMOUNT, MAX_PER_EPOCH, MAX_UNBOUND_WINDOW, NOTE_ID, NO_DEADLINE, PAYEE_CLAIM,
+    PAYEE_CREDENTIAL_ID, PAYEE_NONCE, PAYEE_NOTE_ID, POLICY_ID, SETTLEMENT_EXPIRES_AT,
+    SETTLEMENT_ID, SETTLE_AMOUNT, START_TIME, UNBOUND_DEADLINE, default_claim_policy,
+    default_policy, issuer_operator, owner, setup, setup_with_policies, setup_with_policy, stranger,
 };
 use crate::types::{ClaimTerms, GateOperation, OpenNoteDeposit, SettlementStatus};
 
@@ -281,6 +281,8 @@ fn funding_with_a_note_id_is_refused() {
                     payer: crate::types::SubjectAuthorization {
                         policy_id: POLICY_ID,
                         credential: cordon.credential(),
+                        note_binding: NOTE_ID,
+                        valid_until: NO_DEADLINE,
                         amount: SETTLE_AMOUNT,
                         sig_r,
                         sig_s,
@@ -583,6 +585,8 @@ fn a_claim_signature_is_bound_to_its_settlement() {
                 ClaimTerms {
                     settlement_id: OTHER_SETTLEMENT_ID,
                     credential: cordon.payee_credential(),
+                    note_binding: PAYEE_NOTE_ID,
+                    valid_until: NO_DEADLINE,
                     sig_r,
                     sig_s,
                     nonce: PAYEE_NONCE,
@@ -798,6 +802,8 @@ fn a_claim_from_a_non_pool_caller_is_refused() {
                 ClaimTerms {
                     settlement_id: SETTLEMENT_ID,
                     credential: cordon.payee_credential(),
+                    note_binding: PAYEE_NOTE_ID,
+                    valid_until: NO_DEADLINE,
                     sig_r,
                     sig_s,
                     nonce: PAYEE_NONCE,
@@ -851,4 +857,346 @@ fn a_sweep_takes_the_dust_and_leaves_the_escrow() {
     // And the payee is still paid in full afterwards.
     cordon.claim(SETTLE_AMOUNT);
     assert_eq!(cordon.gate.get_settlement(SETTLEMENT_ID).status, SettlementStatus::Claimed);
+}
+
+//
+// Note binding — the destination of a settled payment
+//
+
+/// **The redirection attack.** A payee's claim authorisation becomes public before it is
+/// consumed — a reverted transaction is included on Starknet with its calldata, and a revert does
+/// not burn the nonce, so a failed claim publishes a live authorisation. Anyone can then resubmit
+/// it pointing at a note of their own: the claimant's subject key still matches the stored payee,
+/// because the thief is presenting the payee's own credential and the payee's own signature.
+///
+/// What stops it is the note binding. The authorisation names the note it is for, and a thief
+/// cannot create a note with someone else's id — a note id commits to its owner's channel key.
+#[test]
+#[should_panic(expected: 'CORDON_NOTE_MISMATCH')]
+fn a_harvested_claim_cannot_be_redirected_to_another_note() {
+    let cordon = setup();
+    cordon.fund(SETTLE_AMOUNT);
+
+    // The payee's authorisation, verbatim, as it would appear in a reverted transaction.
+    let (sig_r, sig_s) = cordon
+        .sign_action_as(
+            cordon.payee_key,
+            legs::CLAIM,
+            CLAIM_POLICY_ID,
+            PAYEE_NOTE_ID,
+            SETTLE_AMOUNT,
+            PAYEE_NONCE,
+            crate::hashing::quoted_settlement_hash(SETTLEMENT_ID),
+        );
+
+    // Replayed into the thief's own note.
+    cordon
+        .apply(
+            GateOperation::Claim(
+                ClaimTerms {
+                    settlement_id: SETTLEMENT_ID,
+                    credential: cordon.payee_credential(),
+                    note_binding: PAYEE_NOTE_ID,
+                    valid_until: NO_DEADLINE,
+                    sig_r,
+                    sig_s,
+                    nonce: PAYEE_NONCE,
+                },
+            ),
+            0,
+            'note_thief',
+        );
+}
+
+/// The negative control for the test above: the identical authorisation, submitted into the note
+/// it actually names, is paid. The two differ only in the destination.
+#[test]
+fn the_same_claim_into_the_bound_note_is_paid() {
+    let cordon = setup();
+    cordon.fund(SETTLE_AMOUNT);
+
+    let deposits = cordon.claim(SETTLE_AMOUNT);
+
+    assert_eq!(*deposits.at(0).note_id, PAYEE_NOTE_ID);
+    assert_eq!(*deposits.at(0).amount, SETTLE_AMOUNT);
+}
+
+/// A refund is redirectable in exactly the same way, and closed in exactly the same way.
+#[test]
+#[should_panic(expected: 'CORDON_NOTE_MISMATCH')]
+fn a_harvested_refund_cannot_be_redirected_to_another_note() {
+    let cordon = setup();
+    cordon.fund(SETTLE_AMOUNT);
+    start_cheat_block_timestamp_global(SETTLEMENT_EXPIRES_AT);
+
+    let (sig_r, sig_s) = cordon
+        .sign_action_as(
+            cordon.subject_key,
+            legs::REFUND,
+            POLICY_ID,
+            NOTE_ID,
+            SETTLE_AMOUNT,
+            'r_a',
+            crate::hashing::quoted_settlement_hash(SETTLEMENT_ID),
+        );
+
+    cordon
+        .apply(
+            GateOperation::Refund(
+                crate::types::RefundTerms {
+                    settlement_id: SETTLEMENT_ID,
+                    note_binding: NOTE_ID,
+                    valid_until: NO_DEADLINE,
+                    sig_r,
+                    sig_s,
+                    nonce: 'r_a',
+                },
+            ),
+            0,
+            'note_thief',
+        );
+}
+
+//
+// Unbound authorisations — the escape hatch, and what it costs
+//
+
+/// A subject who cannot learn their note id before signing says so in the message, and the gate
+/// accepts it — but only with a deadline, and only a short one.
+#[test]
+fn an_unbound_claim_inside_its_window_is_paid() {
+    let cordon = setup();
+    cordon.fund(SETTLE_AMOUNT);
+
+    let (sig_r, sig_s) = cordon
+        .sign_action_until(
+            cordon.payee_key,
+            legs::CLAIM,
+            CLAIM_POLICY_ID,
+            NOTE_ANY,
+            UNBOUND_DEADLINE,
+            SETTLE_AMOUNT,
+            PAYEE_NONCE,
+            crate::hashing::quoted_settlement_hash(SETTLEMENT_ID),
+        );
+
+    let deposits = cordon
+        .apply(
+            GateOperation::Claim(
+                ClaimTerms {
+                    settlement_id: SETTLEMENT_ID,
+                    credential: cordon.payee_credential(),
+                    note_binding: NOTE_ANY,
+                    valid_until: UNBOUND_DEADLINE,
+                    sig_r,
+                    sig_s,
+                    nonce: PAYEE_NONCE,
+                },
+            ),
+            0,
+            PAYEE_NOTE_ID,
+        );
+
+    assert_eq!(*deposits.at(0).amount, SETTLE_AMOUNT);
+}
+
+/// And this is exactly what it costs: the same unbound authorisation pays a thief's note just as
+/// happily. That is the whole reason the gate refuses it without a deadline and caps how far out
+/// the deadline may be — the exposure is a window, not a lifetime.
+#[test]
+fn an_unbound_claim_is_redirectable_which_is_why_it_is_time_boxed() {
+    let cordon = setup();
+    cordon.fund(SETTLE_AMOUNT);
+
+    let (sig_r, sig_s) = cordon
+        .sign_action_until(
+            cordon.payee_key,
+            legs::CLAIM,
+            CLAIM_POLICY_ID,
+            NOTE_ANY,
+            UNBOUND_DEADLINE,
+            SETTLE_AMOUNT,
+            PAYEE_NONCE,
+            crate::hashing::quoted_settlement_hash(SETTLEMENT_ID),
+        );
+
+    let deposits = cordon
+        .apply(
+            GateOperation::Claim(
+                ClaimTerms {
+                    settlement_id: SETTLEMENT_ID,
+                    credential: cordon.payee_credential(),
+                    note_binding: NOTE_ANY,
+                    valid_until: UNBOUND_DEADLINE,
+                    sig_r,
+                    sig_s,
+                    nonce: PAYEE_NONCE,
+                },
+            ),
+            0,
+            'note_thief',
+        );
+
+    assert_eq!(*deposits.at(0).note_id, 'note_thief');
+}
+
+/// Past its deadline, the harvested authorisation above is worthless.
+#[test]
+#[should_panic(expected: 'CORDON_AUTH_EXPIRED')]
+fn an_unbound_authorisation_dies_at_its_deadline() {
+    let cordon = setup();
+    cordon.fund(SETTLE_AMOUNT);
+
+    let (sig_r, sig_s) = cordon
+        .sign_action_until(
+            cordon.payee_key,
+            legs::CLAIM,
+            CLAIM_POLICY_ID,
+            NOTE_ANY,
+            UNBOUND_DEADLINE,
+            SETTLE_AMOUNT,
+            PAYEE_NONCE,
+            crate::hashing::quoted_settlement_hash(SETTLEMENT_ID),
+        );
+
+    start_cheat_block_timestamp_global(UNBOUND_DEADLINE + 1);
+    cordon
+        .apply(
+            GateOperation::Claim(
+                ClaimTerms {
+                    settlement_id: SETTLEMENT_ID,
+                    credential: cordon.payee_credential(),
+                    note_binding: NOTE_ANY,
+                    valid_until: UNBOUND_DEADLINE,
+                    sig_r,
+                    sig_s,
+                    nonce: PAYEE_NONCE,
+                },
+            ),
+            0,
+            'note_thief',
+        );
+}
+
+/// An unbound authorisation with no deadline would be redirectable until its nonce burned, which
+/// for a transaction that reverted is forever. Refused.
+#[test]
+#[should_panic(expected: 'CORDON_NEEDS_DEADLINE')]
+fn an_unbound_authorisation_without_a_deadline_is_refused() {
+    let cordon = setup();
+    cordon.fund(SETTLE_AMOUNT);
+
+    let (sig_r, sig_s) = cordon
+        .sign_action_until(
+            cordon.payee_key,
+            legs::CLAIM,
+            CLAIM_POLICY_ID,
+            NOTE_ANY,
+            NO_DEADLINE,
+            SETTLE_AMOUNT,
+            PAYEE_NONCE,
+            crate::hashing::quoted_settlement_hash(SETTLEMENT_ID),
+        );
+
+    cordon
+        .apply(
+            GateOperation::Claim(
+                ClaimTerms {
+                    settlement_id: SETTLEMENT_ID,
+                    credential: cordon.payee_credential(),
+                    note_binding: NOTE_ANY,
+                    valid_until: NO_DEADLINE,
+                    sig_r,
+                    sig_s,
+                    nonce: PAYEE_NONCE,
+                },
+            ),
+            0,
+            PAYEE_NOTE_ID,
+        );
+}
+
+/// Nor can the window be stretched: a deadline further out than the gate's ceiling is refused.
+#[test]
+#[should_panic(expected: 'CORDON_WINDOW_TOO_LONG')]
+fn an_unbound_window_longer_than_the_ceiling_is_refused() {
+    let cordon = setup();
+    cordon.fund(SETTLE_AMOUNT);
+
+    let far = START_TIME + MAX_UNBOUND_WINDOW + 1;
+    let (sig_r, sig_s) = cordon
+        .sign_action_until(
+            cordon.payee_key,
+            legs::CLAIM,
+            CLAIM_POLICY_ID,
+            NOTE_ANY,
+            far,
+            SETTLE_AMOUNT,
+            PAYEE_NONCE,
+            crate::hashing::quoted_settlement_hash(SETTLEMENT_ID),
+        );
+
+    cordon
+        .apply(
+            GateOperation::Claim(
+                ClaimTerms {
+                    settlement_id: SETTLEMENT_ID,
+                    credential: cordon.payee_credential(),
+                    note_binding: NOTE_ANY,
+                    valid_until: far,
+                    sig_r,
+                    sig_s,
+                    nonce: PAYEE_NONCE,
+                },
+            ),
+            0,
+            PAYEE_NOTE_ID,
+        );
+}
+
+/// The funding leg fills no note, so every payer can name its binding and the weaker mode is never
+/// needed there.
+#[test]
+#[should_panic(expected: 'CORDON_FUND_NEEDS_BINDING')]
+fn funding_cannot_use_the_unbound_mode() {
+    let cordon = setup();
+
+    let terms_hash = crate::hashing::settlement_terms_hash(
+        SETTLEMENT_ID, cordon.payee_key.public_key, CLAIM_POLICY_ID, SETTLEMENT_EXPIRES_AT,
+    );
+    let (sig_r, sig_s) = cordon
+        .sign_action_until(
+            cordon.subject_key,
+            legs::FUND,
+            POLICY_ID,
+            NOTE_ANY,
+            UNBOUND_DEADLINE,
+            SETTLE_AMOUNT,
+            'n',
+            terms_hash,
+        );
+
+    cordon
+        .apply(
+            GateOperation::Fund(
+                crate::types::FundTerms {
+                    payer: crate::types::SubjectAuthorization {
+                        policy_id: POLICY_ID,
+                        credential: cordon.credential(),
+                        note_binding: NOTE_ANY,
+                        valid_until: UNBOUND_DEADLINE,
+                        amount: SETTLE_AMOUNT,
+                        sig_r,
+                        sig_s,
+                        nonce: 'n',
+                    },
+                    settlement_id: SETTLEMENT_ID,
+                    payee_subject_key: cordon.payee_key.public_key,
+                    payee_claim_policy_id: CLAIM_POLICY_ID,
+                    expires_at: SETTLEMENT_EXPIRES_AT,
+                },
+            ),
+            SETTLE_AMOUNT.into(),
+            0,
+        );
 }
