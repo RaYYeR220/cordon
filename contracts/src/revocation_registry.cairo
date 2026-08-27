@@ -77,9 +77,15 @@ pub mod RevocationRegistry {
         /// Revokes one credential, permanently.
         ///
         /// Enforces that the caller is the operator the issuer registry names for `issuer_id`.
-        /// Anyone else — including this contract's owner — is refused, because a compliance
-        /// layer whose operator can revoke a competitor's credentials is worse than no layer at
-        /// all.
+        /// Anyone else is refused, and that includes this contract's owner and the issuer
+        /// registry's owner: a compliance layer whose operator can revoke a competitor's
+        /// credentials is worse than no layer at all.
+        ///
+        /// The guarantee is only as strong as the two things holding it up, so both are enforced
+        /// rather than asserted in prose. The operator role rotates only by its current holder
+        /// (`IssuerRegistry::set_issuer_operator`), and the registry this contract reads it from
+        /// cannot be re-pointed. Remove either and the owner reaches this write path in two
+        /// transactions: take the role, then use it.
         ///
         /// Revoking twice panics rather than passing silently: an operator repeating a revocation
         /// is usually acting on stale state, and a no-op would hide that.
@@ -114,23 +120,9 @@ pub mod RevocationRegistry {
             self.revoked.entry((issuer_id, credential_id)).read()
         }
 
-        /// The issuer registry this contract reads operator rights from.
+        /// The issuer registry this contract reads operator rights from. Fixed at construction.
         fn issuer_registry(self: @ContractState) -> ContractAddress {
             self.issuer_registry.read()
-        }
-
-        /// Re-points the issuer registry. Owner only.
-        ///
-        /// Existing revocations are untouched — they are keyed by issuer id, not by registry —
-        /// so a registry migration never resurrects a revoked credential.
-        ///
-        /// # Panics
-        /// - `CORDON_ZERO_ADDRESS`, `Caller is not the owner`.
-        fn set_issuer_registry(ref self: ContractState, issuer_registry: ContractAddress) {
-            self.ownable.assert_only_owner();
-            assert(issuer_registry.is_non_zero(), ZERO_ADDRESS);
-            self.issuer_registry.write(issuer_registry);
-            self.emit(IssuerRegistrySet { issuer_registry });
         }
     }
 }

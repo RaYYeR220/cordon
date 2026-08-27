@@ -14,8 +14,15 @@ pub const ZERO_ADDRESS: felt252 = 'CORDON_ZERO_ADDRESS';
 /// Refusals raised by [`PolicyGate::privacy_invoke`](crate::policy_gate::PolicyGate), in the order
 /// the gate evaluates them.
 pub mod gate {
-    /// The caller is not the pool address the transaction claims to be settling through.
+    /// The caller is not the privacy pool this gate was deployed against, or the transaction
+    /// names a different one in its calldata.
     pub const BAD_POOL: felt252 = 'CORDON_BAD_POOL';
+    /// The gate still has an allowance outstanding to the pool from an earlier leg. The pool
+    /// consumes exactly what it is approved, so a residue means something went wrong upstream and
+    /// this leg refuses to add to it.
+    pub const STALE_ALLOWANCE: felt252 = 'CORDON_STALE_ALLOWANCE';
+    /// The policy pins a different ERC20 than the one this leg names.
+    pub const TOKEN_NOT_ALLOWED: felt252 = 'CORDON_TOKEN_NOT_ALLOWED';
     /// No policy is published under this id, or it has been retired.
     pub const NO_POLICY: felt252 = 'CORDON_NO_POLICY';
     /// The policy demands a payee credential, which this entrypoint cannot supply. Fail closed.
@@ -24,9 +31,18 @@ pub mod gate {
     pub const NO_VALUE: felt252 = 'CORDON_NO_VALUE';
     /// The balance handed to the gate does not fit the pool's `u128` deposit amount.
     pub const AMOUNT_OVERFLOW: felt252 = 'CORDON_AMOUNT_OVERFLOW';
-    /// The gate holds less than it has promised to open settlements. Unreachable through the
-    /// contract's own logic; it would mean the token moved value out from under it.
+    /// Less value arrived than the subject signed for, once value already owed to open
+    /// settlements is set aside. The pool withdrew too little, or nothing at all.
+    pub const UNDERFUNDED: felt252 = 'CORDON_UNDERFUNDED';
+    /// The gate holds less than its own ledger says it owes.
+    ///
+    /// Reachable only if the ERC20 moves value out from under the contract — a fee-on-transfer
+    /// token, a negative rebase, or an outright malicious one. Pin policies to a token you trust
+    /// (`Policy::token`) and this stays out of reach.
     pub const BALANCE_SHORTFALL: felt252 = 'CORDON_BALANCE_SHORTFALL';
+    /// The internal ledger would overflow or underflow. Named rather than left as a raw
+    /// arithmetic panic, so every refusal still has a Cordon code.
+    pub const LEDGER_BROKEN: felt252 = 'CORDON_LEDGER_BROKEN';
     /// The credential's issuer is unknown, deactivated, or not the issuer the policy pins.
     pub const BAD_ISSUER: felt252 = 'CORDON_BAD_ISSUER';
     /// The issuer signature over the credential hash does not verify.
@@ -72,8 +88,15 @@ pub mod settlement {
     pub const BAD_EXPIRY: felt252 = 'CORDON_BAD_EXPIRY';
     /// The leg names a different token than the settlement holds.
     pub const TOKEN_MISMATCH: felt252 = 'CORDON_TOKEN_MISMATCH';
-    /// A later leg carries its own value. Only the funding leg is fed by the pool.
-    pub const UNEXPECTED_VALUE: felt252 = 'CORDON_UNEXPECTED_VALUE';
+    /// The claimant is not the payee the payer named when funding.
+    pub const NOT_THE_PAYEE: felt252 = 'CORDON_NOT_THE_PAYEE';
+    /// A settlement with no payee could be taken by anyone the claim policy accepts.
+    pub const ZERO_PAYEE: felt252 = 'CORDON_ZERO_PAYEE';
+    /// The funding leg fills no open note, so it must not name one. Signed as `0`.
+    pub const NOTE_ID_NOT_ZERO: felt252 = 'CORDON_NOTE_ID_NOT_ZERO';
+    /// The amount does not fit the claim policy's per-transaction cap, so no claim could ever
+    /// succeed. Refused at funding time rather than stranding the value for a whole window.
+    pub const PAYEE_OVER_CAP: felt252 = 'CORDON_PAYEE_OVER_CAP';
 }
 
 /// Refusals raised by [`IssuerRegistry`](crate::issuer_registry::IssuerRegistry).
@@ -90,6 +113,8 @@ pub mod issuer_registry {
     pub const ALREADY_INACTIVE: felt252 = 'CORDON_ALREADY_INACTIVE';
     /// A zero operator address can never be a caller, so it is rejected outright.
     pub const ZERO_OPERATOR: felt252 = 'CORDON_ZERO_OPERATOR';
+    /// Only an issuer's current operator may hand the role on. Not even the registry owner can.
+    pub const NOT_OPERATOR: felt252 = 'CORDON_NOT_OPERATOR';
 }
 
 /// Refusals raised by [`RevocationRegistry`](crate::revocation_registry::RevocationRegistry).
@@ -116,4 +141,10 @@ pub mod policy_registry {
     pub const ALREADY_RETIRED: felt252 = 'CORDON_ALREADY_RETIRED';
     /// A velocity epoch with a zero aggregate would refuse every settlement.
     pub const ZERO_EPOCH_CAP: felt252 = 'CORDON_ZERO_EPOCH_CAP';
+}
+
+/// Refusals raised by the owner-only sweep on [`PolicyGate`](crate::policy_gate::PolicyGate).
+pub mod sweep {
+    /// Nothing is unaccounted for; there is only value the gate owes to settlements.
+    pub const NOTHING_TO_SWEEP: felt252 = 'CORDON_NOTHING_TO_SWEEP';
 }

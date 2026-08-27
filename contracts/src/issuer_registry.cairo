@@ -11,10 +11,10 @@
 pub mod IssuerRegistry {
     use core::num::traits::Zero;
     use openzeppelin::access::ownable::OwnableComponent;
-    use starknet::ContractAddress;
     use starknet::storage::{
         Map, StoragePathEntry, StoragePointerReadAccess, StoragePointerWriteAccess,
     };
+    use starknet::{ContractAddress, get_caller_address};
     use crate::errors::issuer_registry as errors;
     use crate::interfaces::IIssuerRegistry;
     use crate::types::Issuer;
@@ -77,7 +77,8 @@ pub mod IssuerRegistry {
 
     #[abi(embed_v0)]
     impl IssuerRegistryImpl of IIssuerRegistry<ContractState> {
-        /// Registers `issuer_id` as an active issuer attesting with `public_key`.
+        /// Registers `issuer_id` as an active issuer attesting with `public_key`, with `operator`
+        /// as the address that speaks for it.
         ///
         /// Enforces that the id is fresh: an id is claimed once and its key is never rebound.
         /// Rebinding would retroactively change the meaning of every credential already signed
@@ -85,50 +86,61 @@ pub mod IssuerRegistry {
         /// new one — which invalidates the old credentials rather than silently reauthorising
         /// them.
         ///
-        /// The operator starts unset; call [`set_issuer_operator`] before the issuer needs to
-        /// revoke anything.
+        /// The operator is set here rather than in a second transaction. Leaving it unset would
+        /// open a window in which an issuer has live credentials it cannot revoke — precisely the
+        /// window in which it would most want to.
         ///
         /// # Panics
         /// - `CORDON_ZERO_ISSUER_ID` — id zero is reserved for "any active issuer" in a policy.
         /// - `CORDON_ZERO_KEY` — a zero key is indistinguishable from an unknown issuer.
+        /// - `CORDON_ZERO_OPERATOR` — an issuer that cannot revoke is not a usable issuer.
         /// - `CORDON_ISSUER_EXISTS` — the id is already claimed.
         /// - `Caller is not the owner`.
         fn register_issuer(
             ref self: ContractState,
             issuer_id: felt252,
             public_key: felt252,
+            operator: ContractAddress,
             metadata_uri: ByteArray,
         ) {
             self.ownable.assert_only_owner();
             assert(issuer_id.is_non_zero(), errors::ZERO_ISSUER_ID);
             assert(public_key.is_non_zero(), errors::ZERO_PUBLIC_KEY);
+            assert(operator.is_non_zero(), errors::ZERO_OPERATOR);
 
             let slot = self.issuers.entry(issuer_id);
             assert(slot.public_key.read().is_zero(), errors::ISSUER_EXISTS);
 
-            slot.write(Issuer { public_key, operator: Zero::zero(), active: true });
+            slot.write(Issuer { public_key, operator, active: true });
             self.metadata_uris.entry(issuer_id).write(metadata_uri.clone());
             self.emit(IssuerRegistered { issuer_id, public_key, metadata_uri });
+            self.emit(IssuerOperatorSet { issuer_id, operator });
         }
 
-        /// Names the address allowed to revoke `issuer_id`'s credentials.
+        /// Rotates the address allowed to revoke `issuer_id`'s credentials.
         ///
-        /// Separate from registration on purpose: the attesting key is an offline signing key,
-        /// while the operator is a hot address that has to send transactions. They should not be
-        /// the same secret, and rotating the hot one must not disturb the cold one.
+        /// **Callable only by the current operator, never by the registry owner.** This is the
+        /// hinge the revocation registry's whole guarantee hangs on. An owner who could reassign
+        /// the operator role could revoke any issuer's credentials in two transactions — take the
+        /// role, then use it — and the promise that an issuer alone decides what its attestations
+        /// mean would be worth nothing. The role starts with the issuer at registration and moves
+        /// only by the issuer's own hand.
+        ///
+        /// The operator is a hot address that sends transactions; the attesting key is offline.
+        /// Rotating the hot one must not disturb the cold one, which is why this exists at all.
         ///
         /// # Panics
         /// - `CORDON_UNKNOWN_ISSUER` — nothing registered under this id.
         /// - `CORDON_ZERO_OPERATOR` — a zero address can never be a caller.
-        /// - `Caller is not the owner`.
+        /// - `CORDON_NOT_OPERATOR` — the caller does not currently hold the role.
         fn set_issuer_operator(
             ref self: ContractState, issuer_id: felt252, operator: ContractAddress,
         ) {
-            self.ownable.assert_only_owner();
             assert(operator.is_non_zero(), errors::ZERO_OPERATOR);
 
             let slot = self.issuers.entry(issuer_id);
             assert(slot.public_key.read().is_non_zero(), errors::UNKNOWN_ISSUER);
+            assert(slot.operator.read() == get_caller_address(), errors::NOT_OPERATOR);
 
             slot.operator.write(operator);
             self.emit(IssuerOperatorSet { issuer_id, operator });
@@ -170,7 +182,7 @@ pub mod IssuerRegistry {
             }
         }
 
-        /// The address allowed to revoke this issuer's credentials, or zero if unset.
+        /// The address allowed to revoke this issuer's credentials.
         fn issuer_operator(self: @ContractState, issuer_id: felt252) -> ContractAddress {
             self.issuers.entry(issuer_id).operator.read()
         }

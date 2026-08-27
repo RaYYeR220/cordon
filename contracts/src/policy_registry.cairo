@@ -53,6 +53,7 @@ pub mod PolicyRegistry {
         policy_id: felt252,
         required_claim: felt252,
         issuer_id: felt252,
+        token: ContractAddress,
         max_amount: u128,
         epoch_length: u64,
         max_per_epoch: u128,
@@ -107,6 +108,7 @@ pub mod PolicyRegistry {
             let Policy {
                 required_claim,
                 issuer_id,
+                token,
                 max_amount,
                 epoch_length,
                 max_per_epoch,
@@ -119,6 +121,7 @@ pub mod PolicyRegistry {
                         policy_id,
                         required_claim,
                         issuer_id,
+                        token,
                         max_amount,
                         epoch_length,
                         max_per_epoch,

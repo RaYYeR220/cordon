@@ -30,18 +30,29 @@ pub struct Policy {
     pub required_claim: felt252,
     /// The issuer that must have signed the credential. Zero means any active issuer will do.
     pub issuer_id: felt252,
+    /// The only ERC20 this policy may move. Zero means any token.
+    ///
+    /// A policy pinned to a token is the allowlist: `token` on `privacy_invoke` is caller calldata
+    /// with nothing behind it, and a fee-on-transfer or rebasing ERC20 breaks the ledger this
+    /// contract keeps. Pin real deployments to the asset you actually intend to settle.
+    pub token: ContractAddress,
     /// Maximum value that may pass the gate in a single settlement. Zero means unlimited.
     pub max_amount: u128,
     /// Length of a velocity epoch, in seconds. Zero disables velocity accounting entirely.
+    ///
+    /// Epochs are absolute tumbling windows (`timestamp / epoch_length`), so a subject who spends
+    /// their whole budget just before a boundary and again just after moves `2 * max_per_epoch`
+    /// in quick succession. Size the window with that in mind; the enforced bound is per window,
+    /// not per rolling interval.
     pub epoch_length: u64,
     /// Aggregate value one subject may push through this policy inside a single epoch.
     /// Only meaningful when `epoch_length` is non-zero.
     pub max_per_epoch: u128,
     /// Whether the payee must also present a credential.
     ///
-    /// The gate's `privacy_invoke` entrypoint carries no payee credential, so it refuses to settle
-    /// a policy with this flag set rather than silently ignoring the requirement. Payee-side
-    /// credentials are a future entrypoint, not a dropped check.
+    /// The gate's `Direct` leg carries no payee credential, so it refuses to settle a policy with
+    /// this flag set rather than silently ignoring the requirement. Two-step settlement
+    /// (`Fund` then `Claim`) is how such a policy is satisfied.
     pub require_payee_credential: bool,
     /// Whether the policy may still be used. Publication sets this; retirement clears it.
     pub active: bool,
@@ -77,7 +88,8 @@ pub struct Credential {
 pub struct Issuer {
     /// The STARK-curve public key whose signatures this issuer's credentials carry.
     pub public_key: felt252,
-    /// The address allowed to revoke credentials on this issuer's behalf.
+    /// The address allowed to revoke credentials on this issuer's behalf, and the only address
+    /// allowed to hand that right to someone else.
     pub operator: ContractAddress,
     /// Whether the issuer may still attest. Deactivation is permanent for a given `issuer_id`.
     pub active: bool,
@@ -112,13 +124,19 @@ pub struct Settlement {
     /// The ERC20 held. Both later legs must name the same one.
     pub token: ContractAddress,
     /// The exact amount held. Read from here, never from `balance_of` — the gate can hold several
-    /// settlements in the same token at once.
+    /// settlements in the same token at once, plus dust nobody accounted for.
     pub amount: u128,
     /// The pseudonym that funded it, and the only one that can refund it.
     pub payer_subject_key: felt252,
+    /// The pseudonym the payer named as the payee, and the only one that can claim it.
+    ///
+    /// Without this a settlement has no payee at all — only a *policy* — and any holder of a
+    /// credential that policy accepts could take somebody else's money. The payer knows this key:
+    /// it travels in the payment request alongside the claim policy.
+    pub payee_subject_key: felt252,
     /// The policy the payer satisfied when funding. Bound into the refund signature.
     pub payer_policy_id: felt252,
-    /// The policy a claimant has to satisfy to take the value.
+    /// The policy the named payee has to satisfy to take the value.
     pub payee_claim_policy_id: felt252,
     /// Unix seconds. A claim must land before this; a refund cannot land before it.
     pub expires_at: u64,
@@ -135,6 +153,14 @@ pub struct SubjectAuthorization {
     pub policy_id: felt252,
     /// The issuer-signed credential.
     pub credential: Credential,
+    /// The value this authorisation covers, in token base units.
+    ///
+    /// The gate takes the amount from here rather than from its own `balance_of`. `balance_of` is
+    /// a permissionlessly writable global — anyone can transfer tokens to this contract — so
+    /// deriving the amount from it lets a stranger inflate, deflate or block a payment the subject
+    /// already signed. Here it is signed, and the balance is used only to check the gate can
+    /// actually cover it.
+    pub amount: u128,
     /// `r` of the subject's signature over
     /// [`subject_action_hash`](crate::hashing::subject_action_hash).
     pub sig_r: felt252,
@@ -145,13 +171,25 @@ pub struct SubjectAuthorization {
 }
 
 /// The terms a payer sets when funding a two-step settlement.
+///
+/// Every field here is inside the payer's signature, via
+/// [`settlement_terms_hash`](crate::hashing::settlement_terms_hash). A payer authorises one
+/// settlement with one payee under one claim policy expiring at one time — not "some escrow,
+/// terms to be chosen by whoever assembles the transaction".
 #[derive(Drop, Serde, Copy, PartialEq, Debug)]
 pub struct FundTerms {
     /// The payer's own authorisation. The full payer policy is enforced on the funding leg.
     pub payer: SubjectAuthorization,
     /// Chosen by the payer, and the handle both later legs quote. Claimed once, ever.
+    ///
+    /// **Generate it at random.** Ids are single-use forever and funding is permissionless, so a
+    /// predictable id (an invoice number, an agreed handle) can be burned ahead of you by anyone
+    /// for the price of one unit. The SDK generates them; do not hand-pick them.
     pub settlement_id: felt252,
-    /// The policy the payee will have to satisfy. Must already be published and active.
+    /// The pseudonym allowed to claim. The payee's credential must name this exact key.
+    pub payee_subject_key: felt252,
+    /// The policy the payee will have to satisfy. Must already be published and active, and its
+    /// per-transaction cap must fit the amount being funded.
     pub payee_claim_policy_id: felt252,
     /// When the claim window closes and the refund window opens.
     pub expires_at: u64,
@@ -163,9 +201,10 @@ pub struct FundTerms {
 /// payee vouches for themselves, in their own transaction, at claim time.
 #[derive(Drop, Serde, Copy, PartialEq, Debug)]
 pub struct ClaimTerms {
-    /// Which settlement to take.
+    /// Which settlement to take. Bound into the payee's signature, so a claim authorisation
+    /// cannot be pointed at a different settlement that happens to share a policy and an amount.
     pub settlement_id: felt252,
-    /// The payee's issuer-signed credential, checked against `payee_claim_policy_id`.
+    /// The payee's issuer-signed credential. Its subject key must match the one the payer named.
     pub credential: Credential,
     /// `r` of the payee's signature over the action hash.
     pub sig_r: felt252,
@@ -178,7 +217,7 @@ pub struct ClaimTerms {
 /// A payer taking back a settlement nobody claimed.
 #[derive(Drop, Serde, Copy, PartialEq, Debug)]
 pub struct RefundTerms {
-    /// Which settlement to unwind.
+    /// Which settlement to unwind. Bound into the payer's signature.
     pub settlement_id: felt252,
     /// `r` of the payer's signature over the action hash.
     pub sig_r: felt252,
@@ -193,6 +232,11 @@ pub struct RefundTerms {
 /// One gate serves both a direct payment and the three legs of a two-step settlement, because the
 /// pool calls a single `privacy_invoke` selector. Each variant carries exactly the data its leg
 /// needs and nothing it does not, so no caller ever passes a field the contract ignores.
+///
+/// The leg is part of every signed message (see
+/// [`subject_action_hash`](crate::hashing::subject_action_hash)), so an authorisation for one leg
+/// cannot be executed as another — a `Direct` payment cannot be diverted into an escrow whose
+/// terms the payer never saw.
 ///
 /// **Never reorder these variants** — the discriminant is the first felt of the calldata.
 #[derive(Serde, Copy, Drop, PartialEq, Debug)]

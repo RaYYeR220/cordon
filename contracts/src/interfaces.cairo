@@ -13,17 +13,21 @@ use crate::types::{GateOperation, OpenNoteDeposit, Policy, Settlement};
 /// was registered under it.
 #[starknet::interface]
 pub trait IIssuerRegistry<TState> {
-    /// Registers a new issuer. Owner only.
+    /// Registers a new issuer, together with the address that speaks for it. Owner only.
     fn register_issuer(
-        ref self: TState, issuer_id: felt252, public_key: felt252, metadata_uri: ByteArray,
+        ref self: TState,
+        issuer_id: felt252,
+        public_key: felt252,
+        operator: ContractAddress,
+        metadata_uri: ByteArray,
     );
-    /// Sets the address allowed to revoke this issuer's credentials. Owner only.
+    /// Hands the operator role to another address. Callable **only by the current operator**.
     fn set_issuer_operator(ref self: TState, issuer_id: felt252, operator: ContractAddress);
     /// Takes an issuer out of service. Owner only, and permanent for that id.
     fn deactivate_issuer(ref self: TState, issuer_id: felt252);
     /// The issuer's attesting public key, or zero if the issuer is unknown or inactive.
     fn issuer_public_key(self: @TState, issuer_id: felt252) -> felt252;
-    /// The address allowed to revoke this issuer's credentials, or zero if none is set.
+    /// The address allowed to revoke this issuer's credentials.
     fn issuer_operator(self: @TState, issuer_id: felt252) -> ContractAddress;
     /// Off-chain metadata (name, disclosure policy, contact) for this issuer.
     fn issuer_metadata_uri(self: @TState, issuer_id: felt252) -> ByteArray;
@@ -41,10 +45,8 @@ pub trait IRevocationRegistry<TState> {
     fn revoke(ref self: TState, issuer_id: felt252, credential_id: felt252);
     /// Whether this issuer has revoked this credential id.
     fn is_revoked(self: @TState, issuer_id: felt252, credential_id: felt252) -> bool;
-    /// The issuer registry this contract reads operator rights from.
+    /// The issuer registry this contract reads operator rights from. Fixed at construction.
     fn issuer_registry(self: @TState) -> ContractAddress;
-    /// Re-points the issuer registry, for a registry migration. Owner only.
-    fn set_issuer_registry(ref self: TState, issuer_registry: ContractAddress);
 }
 
 /// Named, versioned rule sets.
@@ -65,13 +67,14 @@ pub trait IPolicyRegistry<TState> {
 pub trait IPolicyGate<TState> {
     /// Runs one leg of a gated payment.
     ///
-    /// Called by the privacy pool through `selector!("privacy_invoke")` as part of an `Invoke`
-    /// action. `operation` selects the leg; see [`GateOperation`] for what each one carries and
-    /// which action array the wallet builds for it. Every refusal panics, and a panic here reverts
-    /// the pool transaction whole, so value that fails a policy never leaves the shielded set.
+    /// Callable **only by the privacy pool this gate was constructed against**. `operation`
+    /// selects the leg; see [`GateOperation`] for what each one carries and which action array the
+    /// wallet builds for it. Every refusal panics, and a panic here reverts the pool transaction
+    /// whole, so value that fails a policy never leaves the shielded set.
     ///
-    /// `pool_address` is the wallet's `${poolAddress}` substitution and must equal the caller.
-    /// `note_id` is `${openNoteIds[0]}`; the `Fund` leg has no open note and ignores it.
+    /// `pool_address` is the wallet's `${poolAddress}` substitution. It is untrusted calldata and
+    /// is cross-checked against the stored pool; it never decides who receives an allowance.
+    /// `note_id` is `${openNoteIds[0]}`; the `Fund` leg fills no note and must pass `0`.
     fn privacy_invoke(
         ref self: TState,
         operation: GateOperation,
@@ -79,12 +82,14 @@ pub trait IPolicyGate<TState> {
         pool_address: ContractAddress,
         note_id: felt252,
     ) -> Span<OpenNoteDeposit>;
+    /// The privacy pool this gate serves. Fixed at construction and never changes.
+    fn privacy_pool(self: @TState) -> ContractAddress;
     /// The settlement booked under `settlement_id`. Reads back with
     /// [`SettlementStatus::None`](crate::types::SettlementStatus) if there is none.
     fn get_settlement(self: @TState, settlement_id: felt252) -> Settlement;
-    /// Value the gate owes to settlements that are still open, in one token. Anything above this
-    /// in the gate's balance is value the pool just sent.
-    fn committed_balance(self: @TState, token: ContractAddress) -> u128;
+    /// Value the gate's own ledger says it holds in one token: open settlements plus anything a
+    /// leg has not yet released. Everything above this in the real balance is unaccounted dust.
+    fn accounted_balance(self: @TState, token: ContractAddress) -> u128;
     /// Whether this `(subject_public_key, nonce)` pair has already been spent, on any leg.
     fn is_nonce_used(self: @TState, subject_public_key: felt252, nonce: felt252) -> bool;
     /// Value already booked against a subject inside one epoch of one policy.
@@ -92,15 +97,13 @@ pub trait IPolicyGate<TState> {
         self: @TState, subject_public_key: felt252, policy_id: felt252, epoch_index: u64,
     ) -> u128;
     /// The epoch index a settlement would be booked into right now. Zero for policies with no
-    /// velocity limit.
+    /// velocity limit, and for an id that was never published.
     fn current_epoch(self: @TState, policy_id: felt252) -> u64;
-    /// The registries this gate reads: `(issuer, revocation, policy)`.
+    /// The registries this gate reads: `(issuer, revocation, policy)`. Fixed at construction.
     fn registries(self: @TState) -> (ContractAddress, ContractAddress, ContractAddress);
-    /// Re-points the registries, for a registry migration. Owner only.
-    fn set_registries(
-        ref self: TState,
-        issuer_registry: ContractAddress,
-        revocation_registry: ContractAddress,
-        policy_registry: ContractAddress,
-    );
+    /// Moves unaccounted dust — and only dust — out of the gate. Owner only.
+    ///
+    /// Returns the amount swept. Bounded by `balance_of - accounted_balance`, so no amount of
+    /// owner mischief can reach a funded settlement.
+    fn sweep(ref self: TState, token: ContractAddress, to: ContractAddress) -> u128;
 }
