@@ -83,7 +83,7 @@ const termsRows: Row[] = [
 
 const actionRows: Row[] = [
   ["field", "value", "felt"],
-  ["tag", "CORDON_SUBJECT_ACTION:V3", SUBJECT_ACTION_TAG],
+  ["tag", "CORDON_SUBJECT_ACTION:V4", SUBJECT_ACTION_TAG],
   ["chain_id", String(SUBJECT_ACTION_FIXTURE.chainId), toFelt(SUBJECT_ACTION_FIXTURE.chainId)],
   [
     "gate_address",
@@ -97,7 +97,16 @@ const actionRows: Row[] = [
   ],
   ["leg", `CORDON_LEG_${SUBJECT_ACTION_FIXTURE.leg.toUpperCase()}`, LEG_TAGS[SUBJECT_ACTION_FIXTURE.leg]],
   ["policy_id", String(SUBJECT_ACTION_FIXTURE.policyId), toFelt(SUBJECT_ACTION_FIXTURE.policyId)],
-  ["note_id", String(SUBJECT_ACTION_FIXTURE.noteId), toFelt(SUBJECT_ACTION_FIXTURE.noteId)],
+  [
+    "note_binding",
+    String(SUBJECT_ACTION_FIXTURE.noteBinding),
+    toFelt(SUBJECT_ACTION_FIXTURE.noteBinding),
+  ],
+  [
+    "valid_until",
+    String(SUBJECT_ACTION_FIXTURE.validUntil),
+    toFelt(SUBJECT_ACTION_FIXTURE.validUntil),
+  ],
   ["token", String(SUBJECT_ACTION_FIXTURE.token), toFelt(SUBJECT_ACTION_FIXTURE.token)],
   ["amount", String(SUBJECT_ACTION_FIXTURE.amount), toFelt(SUBJECT_ACTION_FIXTURE.amount)],
   ["nonce", String(SUBJECT_ACTION_FIXTURE.nonce), toFelt(SUBJECT_ACTION_FIXTURE.nonce)],

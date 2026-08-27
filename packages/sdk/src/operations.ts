@@ -11,20 +11,23 @@
  * | `Claim` | **the named payee** | `transfer(OPEN, self)` → `invoke` | the payee's open note |
  * | `Refund` | payer | `transfer(OPEN, self)` → `invoke` | the payer's open note |
  *
- * ## Why this module has no `amount` parameter on any builder
+ * Most callers want `prepareDirect`, `prepareFund`, `prepareClaim` or `prepareRefund` from
+ * `./prepare.js`, which run the whole flow including learning the resolved note id. The functions
+ * here are the layer underneath, for callers who drive the wallet themselves.
+ *
+ * ## Why no builder takes an `amount`
  *
  * The amount lives inside the signed authorisation — it is a field of `SubjectAuthorization` in the
  * contract — and the gate settles exactly what was signed. So the `withdraw` action and the
  * signature have to name the same number, and the consequences of them disagreeing are ugly and
  * silent: withdrawing **more** than was signed leaves the difference behind as dust the payer
- * cannot recover (see the known residual in `contracts/README.md`), and withdrawing **less** is
- * refused with `CORDON_UNDERFUNDED` after the user has paid for the transaction.
+ * cannot recover, and withdrawing **less** is refused with `CORDON_UNDERFUNDED` after the user has
+ * paid for the transaction.
  *
  * A comment warning about that would be worth very little. Instead the amount is written once, when
  * the authorisation is signed, and every builder here reads it back off that authorisation. There
- * is no second place to put a number, so the two cannot disagree. The same is true of the
- * settlement terms, the token, the gate and the pool: an `authorize*` call is the only place any of
- * them is stated, and the matching `build*Actions` call takes the result whole.
+ * is no second place to put a number, so the two cannot disagree. The same is true of the note
+ * binding, the settlement terms, the token, the gate and the pool.
  *
  * ## Cairo enum encoding
  *
@@ -64,6 +67,12 @@ import {
 } from "./hashing.js";
 import { randomNonce, signHash, type Signature } from "./keys.js";
 import {
+  bindingFelt,
+  fundBinding,
+  isUnbound,
+  type NoteBinding,
+} from "./note-binding.js";
+import {
   assertUnguessableSettlementId,
   randomSettlementId,
   type Settlement,
@@ -81,25 +90,29 @@ export const GATE_OPERATION_VARIANT = {
 } as const;
 
 /**
- * The note id a `Fund` signs and sends.
+ * The note binding a `Fund` signs and sends.
  *
  * A `Fund`'s action array is `withdraw → invoke`: there is no `transfer(OPEN)`, so there is no note
- * to fill and no note id to bind. Both the signature and the calldata carry zero, and the gate
- * refuses anything else with `CORDON_NOTE_ID_NOT_ZERO`.
+ * to fill. Both the signature and the calldata carry zero, the gate refuses anything else with
+ * `CORDON_NOTE_ID_NOT_ZERO`, and it refuses `NOTE_ANY` here with `CORDON_FUND_NEEDS_BINDING` —
+ * there is nothing a funding leg cannot know.
  */
 export const FUND_NOTE_ID: Felt = "0x0";
 
 /**
  * A subject proving, in one value, both who they are and that they authorised this settlement.
  *
- * Mirrors the Cairo `SubjectAuthorization` field for field, `amount` included. The payer uses it on
- * `Direct` and `Fund`; the payee uses the identical shape on `Claim`.
+ * Mirrors the Cairo `SubjectAuthorization` field for field and in order.
  */
 export interface SubjectAuthorization {
   /** The published policy to enforce against the credential. */
   policyId: Felt;
   /** The issuer-signed credential. */
   credential: Credential;
+  /** The open note this is for, or `NOTE_ANY`. */
+  noteBinding: Felt;
+  /** Unix seconds after which this is dead. Zero means no deadline. */
+  validUntil: number;
   /** The value this authorisation covers, in token base units. Authoritative. */
   amount: bigint;
   /** The subject's signature over the action hash. */
@@ -116,8 +129,8 @@ interface AuthorizationBase {
   token: Address;
   /** The value the gate will move. */
   amount: bigint;
-  /** The note id the signature covers. Zero on a `Fund`. */
-  noteId: Felt;
+  /** Where this payment is allowed to land, and until when. */
+  binding: NoteBinding;
   /** The action hash that was signed, for debugging a refusal. */
   actionHash: Felt;
   /** The terms hash inside the action hash. Zero on a `Direct`. */
@@ -180,13 +193,12 @@ export class OperationError extends Error {
 /**
  * Sign a `Direct` payment.
  *
- * The `amount` given here is the amount the withdraw action will withdraw and the amount the gate
- * will settle — {@link buildDirectActions} reads it back off the result, so there is nowhere for a
- * second, different number to come from.
+ * `binding` says where the payment is allowed to land. Use `bindToNote` with an id from the
+ * prepare-twice flow — `prepareDirect` does the whole thing for you.
  *
- * `noteId` is the **resolved** id of the open note the pool will fill, not the
- * `"${openNoteIds[0]}"` placeholder. The wallet substitutes the placeholder in the calldata, but
- * the gate hashes what it actually received, so the subject has to sign the resolved value.
+ * The `amount` given here is the amount the withdraw action will withdraw and the amount the gate
+ * will settle: {@link buildDirectActions} reads it back off the result, so there is nowhere for a
+ * second, different number to come from.
  */
 export function authorizeDirect(
   params: {
@@ -195,7 +207,8 @@ export function authorizeDirect(
     policyId: FeltLike;
     credential: Credential;
     amount: FeltLike;
-    noteId: FeltLike;
+    /** Where the payment may land. See `bindToNote`. */
+    binding: NoteBinding;
     /** Defaults to a fresh 128-bit random nonce. */
     nonce?: FeltLike;
   },
@@ -208,7 +221,8 @@ export function authorizeDirect(
     poolAddress: params.context.pool,
     leg: "Direct",
     policyId: shared.policyId,
-    noteId: shared.noteId,
+    noteBinding: bindingFelt(params.binding),
+    validUntil: params.binding.validUntil,
     token: shared.token,
     amount: shared.amount,
     nonce: shared.nonce,
@@ -220,12 +234,14 @@ export function authorizeDirect(
     context: params.context,
     token: shared.token,
     amount: shared.amount,
-    noteId: shared.noteId,
+    binding: params.binding,
     termsHash: DIRECT_TERMS_HASH,
     actionHash,
     payer: {
       policyId: shared.policyId,
       credential: params.credential,
+      noteBinding: bindingFelt(params.binding),
+      validUntil: params.binding.validUntil,
       amount: shared.amount,
       signature: signHash(actionHash, subjectPrivateKey),
       nonce: shared.nonce,
@@ -236,15 +252,13 @@ export function authorizeDirect(
 /**
  * Sign a `Fund`: park value with the gate for one named payee under one claim policy.
  *
- * The settlement id is generated here, from the platform CSPRNG, and returned on the result. That
- * is not a convenience. Funding is permissionless and an id is single-use forever, so a
- * predictable id can be burned ahead of you by a stranger — and it is the only handle in the event
- * log, so a guessable one also ties the funding to the claim to whatever business record it came
- * from. Supplying your own is possible and is checked for entropy; supplying an invoice number is
- * refused.
+ * There is no `binding` parameter. A funding leg fills no note, so its binding is always zero and
+ * always knowable — the gate refuses `NOTE_ANY` here with `CORDON_FUND_NEEDS_BINDING`.
  *
- * Every term is inside the payer's signature. {@link buildFundActions} takes this whole result, so
- * the terms that were signed and the terms that are sent are the same values.
+ * The settlement id is generated here, from the platform CSPRNG, and returned on the result. That
+ * is not a convenience. Funding is permissionless and an id is single-use forever, so a predictable
+ * id can be burned ahead of you by a stranger — and it is the only handle in the event log, so a
+ * guessable one also ties the funding to the claim to whatever business record it came from.
  */
 export function authorizeFund(
   params: {
@@ -259,14 +273,19 @@ export function authorizeFund(
     payeeClaimPolicyId: FeltLike;
     /** When the claim window closes, in unix seconds. */
     expiresAt: FeltLike;
-    /** Defaults to {@link randomSettlementId}. A guessable value is refused. */
+    /** Optional deadline on the authorisation itself. Unrelated to the claim window. */
+    validUntil?: number;
+    /** Defaults to `randomSettlementId`. A guessable value is refused. */
     settlementId?: FeltLike;
     /** Defaults to a fresh 128-bit random nonce. */
     nonce?: FeltLike;
   },
   subjectPrivateKey: FeltLike,
 ): FundAuthorization {
-  const shared = normalise({ ...params, noteId: FUND_NOTE_ID }, "Fund");
+  const binding = fundBinding(
+    params.validUntil === undefined ? {} : { validUntil: params.validUntil },
+  );
+  const shared = normalise({ ...params, binding }, "Fund");
 
   const payeeSubjectKey = toFelt(params.payeeSubjectKey);
   if (feltEquals(payeeSubjectKey, 0)) {
@@ -296,7 +315,8 @@ export function authorizeFund(
     poolAddress: params.context.pool,
     leg: "Fund",
     policyId: shared.policyId,
-    noteId: FUND_NOTE_ID,
+    noteBinding: FUND_NOTE_ID,
+    validUntil: binding.validUntil,
     token: shared.token,
     amount: shared.amount,
     nonce: shared.nonce,
@@ -308,7 +328,7 @@ export function authorizeFund(
     context: params.context,
     token: shared.token,
     amount: shared.amount,
-    noteId: FUND_NOTE_ID,
+    binding,
     termsHash,
     actionHash,
     settlementId,
@@ -318,6 +338,8 @@ export function authorizeFund(
     payer: {
       policyId: shared.policyId,
       credential: params.credential,
+      noteBinding: FUND_NOTE_ID,
+      validUntil: binding.validUntil,
       amount: shared.amount,
       signature: signHash(actionHash, subjectPrivateKey),
       nonce: shared.nonce,
@@ -340,8 +362,8 @@ export function authorizeClaim(
     settlementId: FeltLike;
     /** The payee's credential. Its subject key must match the settlement's named payee. */
     credential: Credential;
-    /** The resolved id of the open note the payee is filling. */
-    noteId: FeltLike;
+    /** Where the claimed value may land. See `bindToNote`. */
+    binding: NoteBinding;
     nonce?: FeltLike;
   },
   subjectPrivateKey: FeltLike,
@@ -357,7 +379,6 @@ export function authorizeClaim(
 
   const settlementId = toFelt(params.settlementId);
   const termsHash = quotedSettlementHash(settlementId);
-  const noteId = toFelt(params.noteId);
   const nonce = params.nonce === undefined ? randomNonce() : toFelt(params.nonce);
 
   const actionHash = subjectActionHash({
@@ -366,7 +387,8 @@ export function authorizeClaim(
     poolAddress: params.context.pool,
     leg: "Claim",
     policyId: settlement.payeeClaimPolicyId,
-    noteId,
+    noteBinding: bindingFelt(params.binding),
+    validUntil: params.binding.validUntil,
     token: settlement.token,
     amount: settlement.amount,
     nonce,
@@ -378,7 +400,7 @@ export function authorizeClaim(
     context: params.context,
     token: settlement.token,
     amount: settlement.amount,
-    noteId,
+    binding: params.binding,
     termsHash,
     actionHash,
     settlementId,
@@ -400,8 +422,8 @@ export function authorizeRefund(
     context: GateContext;
     settlement: Settlement;
     settlementId: FeltLike;
-    /** The resolved id of the open note the payer is filling. */
-    noteId: FeltLike;
+    /** Where the refunded value may land. See `bindToNote`. */
+    binding: NoteBinding;
     nonce?: FeltLike;
   },
   subjectPrivateKey: FeltLike,
@@ -409,7 +431,6 @@ export function authorizeRefund(
   const { settlement } = params;
   const settlementId = toFelt(params.settlementId);
   const termsHash = quotedSettlementHash(settlementId);
-  const noteId = toFelt(params.noteId);
   const nonce = params.nonce === undefined ? randomNonce() : toFelt(params.nonce);
 
   const actionHash = subjectActionHash({
@@ -418,7 +439,8 @@ export function authorizeRefund(
     poolAddress: params.context.pool,
     leg: "Refund",
     policyId: settlement.payerPolicyId,
-    noteId,
+    noteBinding: bindingFelt(params.binding),
+    validUntil: params.binding.validUntil,
     token: settlement.token,
     amount: settlement.amount,
     nonce,
@@ -430,7 +452,7 @@ export function authorizeRefund(
     context: params.context,
     token: settlement.token,
     amount: settlement.amount,
-    noteId,
+    binding: params.binding,
     termsHash,
     actionHash,
     settlementId,
@@ -445,34 +467,41 @@ function normalise(
     token: Address;
     policyId: FeltLike;
     amount: FeltLike;
-    noteId: FeltLike;
+    binding: NoteBinding;
     nonce?: FeltLike;
   },
   leg: Leg,
-): { token: Address; policyId: Felt; amount: bigint; noteId: Felt; nonce: Felt } {
+): { token: Address; policyId: Felt; amount: bigint; nonce: Felt } {
   const amount = BigInt(toU128Felt(params.amount, "amount"));
   if (amount === 0n) {
     throw new OperationError(
       `a ${leg} for zero moves nothing and is refused with CORDON_NO_VALUE`,
     );
   }
+  if (leg === "Fund" && isUnbound(params.binding)) {
+    throw new OperationError(
+      "a Fund fills no note, so it can always bind one and NOTE_ANY is refused with " +
+        "CORDON_FUND_NEEDS_BINDING",
+    );
+  }
   return {
     token: toAddress(params.token, "token"),
     policyId: toFelt(params.policyId),
     amount,
-    noteId: toFelt(params.noteId),
     nonce: params.nonce === undefined ? randomNonce() : toFelt(params.nonce),
   };
 }
 
 /**
- * A `SubjectAuthorization` as the twelve felts Cairo's positional `Serde` expects:
- * `[policy_id, …7 credential felts…, amount, sig_r, sig_s, nonce]`.
+ * A `SubjectAuthorization` as the fourteen felts Cairo's positional `Serde` expects:
+ * `[policy_id, …7 credential felts…, note_binding, valid_until, amount, sig_r, sig_s, nonce]`.
  */
 export function encodeSubjectAuthorization(authorization: SubjectAuthorization): Felt[] {
   return [
     authorization.policyId,
     ...credentialCalldata(authorization.credential),
+    authorization.noteBinding,
+    toU64Felt(authorization.validUntil, "validUntil"),
     toU128Felt(authorization.amount, "amount"),
     authorization.signature.r,
     authorization.signature.s,
@@ -484,13 +513,13 @@ export function encodeSubjectAuthorization(authorization: SubjectAuthorization):
  * Encode the `GateOperation`: variant index first, then that variant's fields in declaration order.
  *
  * ```text
- * Direct(SubjectAuthorization)      -> [0, …12 authorisation felts…]
+ * Direct(SubjectAuthorization)      -> [0, …14 authorisation felts…]
  * Fund  (payer, settlement_id, payee_subject_key, payee_claim_policy_id, expires_at)
- *                                   -> [1, …12…, settlement_id, payee_key, payee_policy, expires_at]
- * Claim (settlement_id, credential, sig_r, sig_s, nonce)
- *                                   -> [2, settlement_id, …7…, r, s, nonce]
- * Refund(settlement_id, sig_r, sig_s, nonce)
- *                                   -> [3, settlement_id, r, s, nonce]
+ *                                   -> [1, …14…, settlement_id, payee_key, payee_policy, expires_at]
+ * Claim (settlement_id, credential, note_binding, valid_until, sig_r, sig_s, nonce)
+ *                                   -> [2, settlement_id, …7…, binding, valid_until, r, s, nonce]
+ * Refund(settlement_id, note_binding, valid_until, sig_r, sig_s, nonce)
+ *                                   -> [3, settlement_id, binding, valid_until, r, s, nonce]
  * ```
  */
 export function encodeGateOperation(authorization: GateAuthorization): Felt[] {
@@ -514,6 +543,8 @@ export function encodeGateOperation(authorization: GateAuthorization): Felt[] {
         toFelt(GATE_OPERATION_VARIANT.Claim),
         authorization.settlementId,
         ...credentialCalldata(authorization.credential),
+        bindingFelt(authorization.binding),
+        toU64Felt(authorization.binding.validUntil, "validUntil"),
         authorization.signature.r,
         authorization.signature.s,
         authorization.nonce,
@@ -522,6 +553,8 @@ export function encodeGateOperation(authorization: GateAuthorization): Felt[] {
       return [
         toFelt(GATE_OPERATION_VARIANT.Refund),
         authorization.settlementId,
+        bindingFelt(authorization.binding),
+        toU64Felt(authorization.binding.validUntil, "validUntil"),
         authorization.signature.r,
         authorization.signature.s,
         authorization.nonce,
@@ -534,8 +567,9 @@ export interface CalldataOverrides {
   /** Replaces the `"${poolAddress}"` placeholder. */
   poolAddress?: string;
   /**
-   * Replaces the `"${openNoteIds[0]}"` placeholder. Must equal the note id that was signed —
-   * a different one is refused with `CORDON_BAD_SUBJECT_SIG`, so it is rejected here instead.
+   * Replaces the `"${openNoteIds[0]}"` placeholder. On a bound authorisation it must equal the
+   * note that was signed — a different one is refused with `CORDON_NOTE_MISMATCH`, so it is
+   * rejected here instead.
    */
   noteId?: string;
   /** Which open note the placeholder points at. Defaults to the first. */
@@ -552,17 +586,19 @@ export interface CalldataOverrides {
  * `"${poolAddress}"` and `"${openNoteIds[0]}"` are literal strings the wallet substitutes while
  * assembling the transaction. They travel as-is; hex-encoding either one breaks the substitution
  * and the gate refuses the result as `CORDON_BAD_POOL`.
+ *
+ * Note that the last felt is the note id, whatever the leg. That is what makes the resolved id
+ * readable out of a prepared call — see `readResolvedNoteId`.
  */
 export function encodeGateCalldata(
   authorization: GateAuthorization,
   overrides: CalldataOverrides = {},
 ): CalldataItem[] {
-  const noteId = resolveNoteId(authorization, overrides);
   return [
     ...encodeGateOperation(authorization),
     authorization.token,
     calldataItem(overrides.poolAddress ?? POOL_ADDRESS_PLACEHOLDER),
-    calldataItem(noteId),
+    calldataItem(resolveNoteId(authorization, overrides)),
   ];
 }
 
@@ -580,10 +616,13 @@ function resolveNoteId(
     return FUND_NOTE_ID;
   }
   if (overrides.noteId === undefined) return openNoteIdPlaceholder(overrides.openNoteIndex ?? 0);
-  if (!feltEquals(overrides.noteId, authorization.noteId)) {
+  if (
+    authorization.binding.mode === "note" &&
+    !feltEquals(overrides.noteId, authorization.binding.noteId)
+  ) {
     throw new OperationError(
-      `this authorisation was signed for note ${authorization.noteId}, so sending it with note ` +
-        `${overrides.noteId} would be refused with CORDON_BAD_SUBJECT_SIG`,
+      `this authorisation is bound to note ${authorization.binding.noteId}, so sending it with ` +
+        `note ${overrides.noteId} would be refused with CORDON_NOTE_MISMATCH`,
     );
   }
   return overrides.noteId;
@@ -684,18 +723,18 @@ export function buildRefundActions(params: {
   ];
 }
 
-/**
- * Build the action array for any signed leg.
- *
- * `payee` (for a `Direct`) or `recipient` (for a `Claim` or `Refund`) says who the resulting open
- * note is credited to; a `Fund` creates no note and needs neither.
- */
 export type BuildActionsParams =
   | { authorization: DirectAuthorization; payee: Address; overrides?: CalldataOverrides }
   | { authorization: FundAuthorization; overrides?: CalldataOverrides }
   | { authorization: ClaimAuthorization; recipient: Address; overrides?: CalldataOverrides }
   | { authorization: RefundAuthorization; recipient: Address; overrides?: CalldataOverrides };
 
+/**
+ * Build the action array for any signed leg.
+ *
+ * `payee` (for a `Direct`) or `recipient` (for a `Claim` or `Refund`) says who the resulting open
+ * note is credited to; a `Fund` creates no note and needs neither.
+ */
 export function buildActions(params: BuildActionsParams): Strk20Action[] {
   switch (params.authorization.leg) {
     case "Direct":

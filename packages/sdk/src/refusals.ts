@@ -235,11 +235,70 @@ const REFUSALS: readonly Refusal[] = [
     title: "The subject did not authorise this settlement",
     explanation:
       "The signature over the action hash failed against the credential's subject public key. " +
-      "Holding a credential is not authorisation: the subject signs the exact chain, gate, policy, " +
-      "note, token, amount and nonce. If any of those changed after signing — most often the " +
-      "amount, which the gate reads from its own balance — the signature no longer covers it.",
+      "Holding a credential is not authorisation: the subject signs the exact chain, gate, pool, " +
+      "leg, policy, note binding, deadline, token, amount, nonce and settlement terms. A wrong " +
+      "destination is reported separately as CORDON_NOTE_MISMATCH, so this one really does mean " +
+      "the signature does not verify — a different key, or a field changed after signing.",
     source: "gate",
     remedy: "payer",
+    step: 9,
+  },
+  {
+    code: "CORDON_NOTE_MISMATCH",
+    title: "The transaction filled a different note than was authorised",
+    explanation:
+      "The authorisation names the open note it is allowed to land in, and this transaction fills "
+      + "a different one. Your key is fine and your credential is fine — the destination is "
+      + "wrong. Usually the open note moved because another transaction landed on the same channel "
+      + "between signing and submitting, in which case sign again for the new note. If it was not "
+      + "your transaction, this is the check working: it is what stops a published authorisation "
+      + "being redirected into somebody else's note.",
+    source: "gate",
+    remedy: "payer",
+    step: 9,
+  },
+  {
+    code: "CORDON_AUTH_EXPIRED",
+    title: "The authorisation has passed its deadline",
+    explanation:
+      "The subject signed a valid_until that is now in the past. Sign again. An unbound "
+      + "authorisation must carry one, and even a bound one may set one to limit how long it can sit "
+      + "unsubmitted.",
+    source: "gate",
+    remedy: "payer",
+    step: 9,
+  },
+  {
+    code: "CORDON_NEEDS_DEADLINE",
+    title: "An unbound authorisation must carry a deadline",
+    explanation:
+      "This authorisation accepts any note, so it can be redirected by anyone who sees it — "
+      + "and a reverted transaction publishes its calldata on chain. The gate will not accept that "
+      + "without a deadline bounding how long the exposure lasts. Bind the note instead, or set a "
+      + "valid_until.",
+    source: "gate",
+    remedy: "integrator",
+    step: 9,
+  },
+  {
+    code: "CORDON_WINDOW_TOO_LONG",
+    title: "That deadline is too far out for an unbound authorisation",
+    explanation:
+      "An authorisation that accepts any note may live at most 600 seconds. Longer would leave a "
+      + "redirectable authorisation lying in a reverted transaction's calldata for anyone to pick "
+      + "up. Sign closer to submission, or bind the note and the limit does not apply.",
+    source: "gate",
+    remedy: "integrator",
+    step: 9,
+  },
+  {
+    code: "CORDON_NOTE_IS_SENTINEL",
+    title: "The resolved note id collides with the NOTE_ANY sentinel",
+    explanation:
+      "The note the transaction fills is the same felt as the CORDON_NOTE_ANY sentinel, so the gate "
+      + "cannot tell a bound authorisation from an unbound one. Not reachable by accident.",
+    source: "gate",
+    remedy: "integrator",
     step: 9,
   },
   {
@@ -291,6 +350,15 @@ const REFUSALS: readonly Refusal[] = [
       "Funding with no payee key would create an escrow anyone the claim policy accepts could " +
       "take — an ordinary customer of the same issuer, no forgery required. Name the pseudonym " +
       "that is allowed to claim.",
+    source: "settlement",
+    remedy: "integrator",
+  },
+  {
+    code: "CORDON_FUND_NEEDS_BINDING",
+    title: "A funding leg must name its note binding",
+    explanation:
+      "A Fund fills no open note, so there is nothing it cannot know and no reason to accept any "
+      + "note. Its binding is always zero. Seeing NOTE_ANY here means the wrong binding was signed.",
     source: "settlement",
     remedy: "integrator",
   },

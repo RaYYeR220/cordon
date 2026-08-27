@@ -43,6 +43,8 @@ export {
   DIRECT_TERMS_HASH,
   DOMAIN_TAGS,
   LEG_TAGS,
+  MAX_UNBOUND_WINDOW_SECONDS,
+  NOTE_ANY,
   SETTLEMENT_TERMS_TAG,
   SUBJECT_ACTION_TAG,
   credentialHash,
@@ -138,6 +140,31 @@ export {
   type TransferAction,
   type WithdrawAction,
 } from "./actions.js";
+
+export {
+  NoteBindingError,
+  acceptAnyNoteAndAllowRedirection,
+  bindToNote,
+  bindingFelt,
+  describeBinding,
+  fundBinding,
+  isUnbound,
+  type NoteBinding,
+} from "./note-binding.js";
+
+export {
+  NoteDriftError,
+  NotePreparationError,
+  prepareClaim,
+  prepareDirect,
+  prepareFund,
+  prepareRefund,
+  readResolvedNoteId,
+  type PreparedGateTransaction,
+  type PreparedInvoke,
+  type ResolvedCall,
+  type Strk20Prepare,
+} from "./prepare.js";
 
 export {
   FUND_NOTE_ID,

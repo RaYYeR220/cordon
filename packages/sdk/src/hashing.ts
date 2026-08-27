@@ -33,7 +33,7 @@ export const DOMAIN_TAGS = {
   /** Issuer-signed attestation. */
   credential: "CORDON_CREDENTIAL:V1",
   /** Subject-signed authorisation of one leg at one gate. */
-  subjectAction: "CORDON_SUBJECT_ACTION:V3",
+  subjectAction: "CORDON_SUBJECT_ACTION:V4",
   /** The settlement terms nested inside an action hash. */
   settlementTerms: "CORDON_SETTLEMENT_TERMS:V1",
   /** Seed for deriving a subject key from a wallet signature. Never verified on chain. */
@@ -42,10 +42,27 @@ export const DOMAIN_TAGS = {
 
 /** `'CORDON_CREDENTIAL:V1'` as a felt. */
 export const CREDENTIAL_TAG: Felt = toFelt(DOMAIN_TAGS.credential);
-/** `'CORDON_SUBJECT_ACTION:V3'` as a felt. */
+/** `'CORDON_SUBJECT_ACTION:V4'` as a felt. */
 export const SUBJECT_ACTION_TAG: Felt = toFelt(DOMAIN_TAGS.subjectAction);
 /** `'CORDON_SETTLEMENT_TERMS:V1'` as a felt. */
 export const SETTLEMENT_TERMS_TAG: Felt = toFelt(DOMAIN_TAGS.settlementTerms);
+
+/**
+ * `CORDON_NOTE_ANY` — the sentinel meaning "I could not know which note this fills".
+ *
+ * Signing it gives up the one thing that makes a leaked authorisation worthless to a thief. Prefer
+ * the prepare-twice flow, which learns the real note id; reach for this only through
+ * `acceptAnyNoteAndAllowRedirection`, which is named that way on purpose.
+ */
+export const NOTE_ANY: Felt = toFelt("CORDON_NOTE_ANY");
+
+/**
+ * How far ahead an unbound authorisation's deadline may sit, in seconds.
+ *
+ * Mirrors `MAX_UNBOUND_WINDOW` in `policy_gate.cairo`. Beyond this the gate refuses with
+ * `CORDON_WINDOW_TOO_LONG`.
+ */
+export const MAX_UNBOUND_WINDOW_SECONDS = 600;
 
 /** The four legs of `privacy_invoke`, as the names this SDK uses for them. */
 export type Leg = "Direct" | "Fund" | "Claim" | "Refund";
@@ -104,18 +121,27 @@ export interface SettlementTermsHashInput {
  *
  * One preimage serves all four legs, and what each leg puts in it differs:
  *
- * | Leg | Signer | `policyId` | `noteId` | `amount` | `termsHash` |
+ * | Leg | Signer | `policyId` | `noteBinding` | `amount` | `termsHash` |
  * | --- | --- | --- | --- | --- | --- |
- * | `Direct` | payer | the payer policy | the resolved open note id | what the pool withdrew | `0` |
- * | `Fund` | payer | the payer policy | `0` — no note exists | what the pool withdrew | all four terms |
- * | `Claim` | payee | the settlement's `payeeClaimPolicyId` | the payee's own note id | the settlement's amount | the id, rest zero |
- * | `Refund` | payer | the settlement's `payerPolicyId` | the payer's own note id | the settlement's amount | the id, rest zero |
+ * | `Direct` | payer | the payer policy | the resolved note id, or `NOTE_ANY` | what the pool withdrew | `0` |
+ * | `Fund` | payer | the payer policy | `0` — no note exists, and `NOTE_ANY` is refused | what the pool withdrew | all four terms |
+ * | `Claim` | payee | the settlement's `payeeClaimPolicyId` | the payee's resolved note id, or `NOTE_ANY` | the settlement's amount | the id, rest zero |
+ * | `Refund` | payer | the settlement's `payerPolicyId` | the payer's resolved note id, or `NOTE_ANY` | the settlement's amount | the id, rest zero |
  *
- * The leg is in the message, and that is load-bearing. Without it, a payer who signed a `Direct`
- * payment into their own note had also — one nonce, one legitimate use — authorised a `Fund`
- * parking that money in an escrow whose id, payee, claim policy and expiry were chosen by whoever
- * assembled the transaction. The nonce registry does not help: it stops a *second* use, not a
- * first use that was the wrong one.
+ * Two fields here exist because earlier versions got this wrong, and both are worth knowing about.
+ *
+ * The **leg** is in the message because `:V2` left it out and justified that with the shared nonce
+ * registry. The registry stops a *second* use of a signature; it says nothing about the first use
+ * being the wrong one. A payer who signed a `Direct` payment into their own note had also — one
+ * nonce, one entirely legitimate use — authorised a `Fund` parking that money in an escrow whose
+ * terms were chosen by whoever assembled the transaction.
+ *
+ * The **note binding** is in the message because dropping it is not safe either. A reverted
+ * transaction is included on Starknet with its full calldata, and a revert does not burn the nonce
+ * — so a claim that fails for any ordinary reason (the window closed, an over-velocity refusal,
+ * too little shielded balance for the pool's fee) publishes a still-valid authorisation to the
+ * whole chain. Without a destination in the message, anyone could resubmit it into a note of their
+ * own, and the credential, the signature and the payee key would all still check out.
  */
 export interface SubjectActionHashInput {
   /** The chain this will execute on. Read it from the provider, never from a config default. */
@@ -128,8 +154,17 @@ export interface SubjectActionHashInput {
   leg: Leg;
   /** The published rule set this authorisation is judged against. */
   policyId: FeltLike;
-  /** The open note the pool will fill, or `0` on a `Fund`, which reserves none. */
-  noteId: FeltLike;
+  /**
+   * Where this payment is allowed to land: the resolved open note id, or {@link NOTE_ANY}.
+   *
+   * A `Fund` fills no note and always binds `0`.
+   */
+  noteBinding: FeltLike;
+  /**
+   * Unix seconds after which this authorisation is dead. `0` means no deadline, which the gate
+   * allows only when `noteBinding` names a note.
+   */
+  validUntil: FeltLike;
   /** The ERC20 being settled. */
   token: Address;
   /**
@@ -234,8 +269,8 @@ export function quotedSettlementHash(settlementId: FeltLike): Felt {
  * The exact felt list a subject's signature covers, tag first.
  *
  * ```text
- * ['CORDON_SUBJECT_ACTION:V3', chain_id, gate_address, pool_address, leg,
- *  policy_id, note_id, token, amount, nonce, terms_hash]
+ * ['CORDON_SUBJECT_ACTION:V4', chain_id, gate_address, pool_address, leg,
+ *  policy_id, note_binding, valid_until, token, amount, nonce, terms_hash]
  * ```
  */
 export function subjectActionPreimage(input: SubjectActionHashInput): Felt[] {
@@ -252,7 +287,8 @@ export function subjectActionPreimage(input: SubjectActionHashInput): Felt[] {
     toAddress(input.poolAddress, "poolAddress"),
     leg,
     toFelt(input.policyId),
-    toFelt(input.noteId),
+    toFelt(input.noteBinding),
+    toU64Felt(input.validUntil, "validUntil"),
     toAddress(input.token, "token"),
     toU128Felt(input.amount, "amount"),
     toFelt(input.nonce),
@@ -263,9 +299,9 @@ export function subjectActionPreimage(input: SubjectActionHashInput): Felt[] {
 /**
  * The message a subject signs to authorise one specific leg, at one specific gate.
  *
- * Eleven elements. Holding a credential is not the same as authorising a payment: the credential
+ * Twelve elements. Holding a credential is not the same as authorising a payment: the credential
  * says who the subject is, this says that this subject wants this value moved, on this leg, under
- * this policy, at this contract, through this pool, once.
+ * this policy, at this contract, through this pool, into this note, once.
  */
 export function subjectActionHash(input: SubjectActionHashInput): Felt {
   return poseidon(subjectActionPreimage(input));
