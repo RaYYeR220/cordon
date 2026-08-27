@@ -11,8 +11,9 @@ Pinned by: [`src/tests/test_hashing.cairo`](src/tests/test_hashing.cairo) — in
 recompute each hash from the literal felt list printed below, so this document cannot drift from
 the code without a test failing.
 
-> **`:V3` is a breaking change.** The action preimage gained the pool address, a leg tag and a
-> settlement-terms hash. Any `:V2` signature is now refused. See
+> **`:V4` is a breaking change.** The action preimage replaced the raw note id with a note
+> *binding* and added the authorisation's own deadline. Any `:V3` signature is now refused. See
+> [Why `:V4`](#why-v4-the-signer-cannot-know-the-note-id) and
 > [Why `:V3`](#why-v3-the-argument-v2-made-was-wrong).
 
 ## Primitives
@@ -36,7 +37,7 @@ circulation.
 | Tag | Short string | felt (hex) |
 | --- | --- | --- |
 | Credential | `CORDON_CREDENTIAL:V1` | `0x434f52444f4e5f43524544454e5449414c3a5631` |
-| Subject action | `CORDON_SUBJECT_ACTION:V3` | `0x434f52444f4e5f5355424a4543545f414354494f4e3a5633` |
+| Subject action | `CORDON_SUBJECT_ACTION:V4` | `0x434f52444f4e5f5355424a4543545f414354494f4e3a5634` |
 | Settlement terms | `CORDON_SETTLEMENT_TERMS:V1` | `0x434f52444f4e5f534554544c454d454e545f5445524d533a5631` |
 
 ### Leg tags
@@ -53,6 +54,56 @@ Which of the four `GateOperation` legs an authorisation is for.
 These are short strings rather than the enum's discriminant on purpose. A discriminant is a
 position, and positions move when someone adds a variant; a tag means the same thing forever and is
 legible in a raw calldata dump.
+
+## Why `:V4`: the signer cannot know the note id
+
+`:V3` put the resolved `note_id` in the signed message. On the Wallet API route — the only route
+that works on mainnet — that is not something the signer can produce.
+
+The application submits the literal placeholder `"${openNoteIds[0]}"` and the *wallet* substitutes
+the resolved felt at submission time. The value is
+`poseidon(NOTE_ID_TAG, channel_key, token, index, 0)`, and `channel_key` is
+`poseidon(CHANNEL_KEY_TAG, sender_addr, sender_private_key, recipient_addr, recipient_public_key)` —
+it commits to the **wallet's private key**. An application cannot compute it, and the pool's own
+documentation says as much: *"That indirection is what lets you reference a note that does not
+exist yet at the time you build the calldata."* Under `:V3`, `Fund` (which signs `note_id = 0`) was
+signable and `Direct`, `Claim` and `Refund` were not.
+
+Dropping the note from the message is not a safe fix, and it is worth being exact about why,
+because the argument decides the design. Consider a `Claim`. If the message does not name the
+destination, then anyone who obtains the payee's authorisation before it is consumed can resubmit
+it pointing at a note of their own — the gate still sees the payee's credential, the payee's
+signature, and a subject key matching the stored payee, so every check passes and the money lands
+in the thief's note. **That is reachable without any privileged position:** a reverted transaction
+is included on Starknet with its full calldata (execution status `REVERTED`), and a revert does not
+burn the nonce, so a claim that fails for any ordinary reason — an expired window, an over-velocity
+refusal, too little shielded balance for the pool's fee — publishes a live authorisation to the
+whole chain. The hostile-assembler case in the `:V3` threat model gets there too, immediately.
+
+So `:V4` keeps the destination in the message but lets the signer say which of two things they can
+honestly commit to:
+
+- **`note_binding = note_id`** — the strong mode. The gate asserts the transaction fills exactly
+  that note, and a harvested authorisation is worthless: a thief would have to create a note with
+  that id, and a note id commits to its owner's channel key. This mode *is* reachable —
+  `strk20PrepareInvoke` returns `{ call, proof }` where `call` is a fully resolved Starknet `Call`,
+  so the resolved note id is in `call.calldata`. Prepare once to learn the note, sign, prepare
+  again to submit. The id is stable across that round trip because none of its inputs depend on the
+  invoke calldata: only the channel key, the token and the note index, and the index moves only if
+  another transaction lands on the same channel in between — in which case the second prepare
+  produces a different id and the transaction fails closed rather than paying the wrong party.
+- **`note_binding = NOTE_ANY`** — the weak mode, for flows where the resolved id genuinely cannot
+  be obtained before signing. The gate accepts whichever note the transaction fills, which is
+  exactly the redirection exposure described above. It is not free: an unbound authorisation
+  **must** carry a `valid_until`, and the gate refuses one further out than **600 seconds**. That
+  turns "redirectable until the nonce burns" — which, for a reverted transaction, is forever — into
+  a window an attacker has to already be watching for.
+
+The choice is *inside the signed message*, so a subject can see which one they made. The gate does
+not silently drop the binding on anyone's behalf.
+
+`valid_until` is also a signed field in the strong mode, where `0` (no deadline) is allowed: a
+bound authorisation is not redirectable, so it does not need to die on a clock.
 
 ## Why `:V3`: the argument `:V2` made was wrong
 
@@ -137,13 +188,14 @@ mistaken for a hash of some other four-felt structure.
 
 ```
 subject_action_hash = poseidon_hash_span([
-    'CORDON_SUBJECT_ACTION:V3',  // domain tag
+    'CORDON_SUBJECT_ACTION:V4',  // domain tag
     chain_id,                    // felt252, get_tx_info().unbox().chain_id
     gate_address,                // ContractAddress -> felt252, the verifying PolicyGate
     pool_address,                // ContractAddress -> felt252, the pool that will pull the value
     leg,                         // felt252, one of the leg tags above
     policy_id,                   // felt252
-    note_id,                     // felt252, the open note to fill (0 on Fund)
+    note_binding,                // felt252, the open note to fill, or NOTE_ANY (0 on Fund)
+    valid_until,                 // u64 widened to felt252, unix seconds; 0 means no deadline
     token,                       // ContractAddress -> felt252
     amount,                      // u128 widened to felt252, token base units
     nonce,                       // felt252, chosen by the subject
@@ -151,7 +203,10 @@ subject_action_hash = poseidon_hash_span([
 ])
 ```
 
-Eleven elements, in that order.
+Twelve elements, in that order.
+
+`NOTE_ANY` is the short string `CORDON_NOTE_ANY` =
+`0x434f52444f4e5f4e4f54455f414e59`.
 
 The subject signs this with the private key behind the `subject_public_key` their credential names.
 Holding a credential is not the same as authorising a payment: the credential says who the subject
@@ -165,12 +220,15 @@ or block a payment the subject had already signed.
 
 ### What each leg signs
 
-| Leg | Signer | `policy_id` | `note_id` | `amount` | `terms_hash` |
+| Leg | Signer | `policy_id` | `note_binding` | `amount` | `terms_hash` |
 | --- | --- | --- | --- | --- | --- |
-| `Direct` | payer | the payer policy | `${openNoteIds[0]}` | what the pool withdrew | `0` |
-| `Fund` | payer | the payer policy | **must be `0`** — the array is `withdraw → invoke`, there is no note | what the pool withdrew | all four terms |
-| `Claim` | **payee** | the settlement's `payee_claim_policy_id` | the payee's own `${openNoteIds[0]}` | the settlement's amount | the settlement id, rest zero |
-| `Refund` | payer | the settlement's `payer_policy_id` | the payer's own `${openNoteIds[0]}` | the settlement's amount | the settlement id, rest zero |
+| `Direct` | payer | the payer policy | the resolved `${openNoteIds[0]}`, or `NOTE_ANY` | what the pool withdrew | `0` |
+| `Fund` | payer | the payer policy | **must be `0`** — the array is `withdraw → invoke`, there is no note, and `NOTE_ANY` is refused here | what the pool withdrew | all four terms |
+| `Claim` | **payee** | the settlement's `payee_claim_policy_id` | the payee's resolved `${openNoteIds[0]}`, or `NOTE_ANY` | the settlement's amount | the settlement id, rest zero |
+| `Refund` | payer | the settlement's `payer_policy_id` | the payer's resolved `${openNoteIds[0]}`, or `NOTE_ANY` | the settlement's amount | the settlement id, rest zero |
+
+`valid_until` may be `0` only when `note_binding` names a note. With `NOTE_ANY` it is mandatory and
+must be within 600 seconds of the block the transaction lands in.
 
 ## Pinned test vectors
 
@@ -211,20 +269,21 @@ settlement_terms_hash = 0x4d1dba11f958448bb5b3d4b7e39ebba33b79ca80ea191539bc1868
 
 | Field | Value | felt (hex) |
 | --- | --- | --- |
-| tag | `CORDON_SUBJECT_ACTION:V3` | `0x434f52444f4e5f5355424a4543545f414354494f4e3a5633` |
+| tag | `CORDON_SUBJECT_ACTION:V4` | `0x434f52444f4e5f5355424a4543545f414354494f4e3a5634` |
 | `chain_id` | `SN_MAIN` | `0x534e5f4d41494e` |
 | `gate_address` | — | `0x02c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de001` |
 | `pool_address` | — | `0x0900100c0011ea1100c0011ea1100c0011ea1100c0011ea1100c0011ea11002` |
 | `leg` | `CORDON_LEG_FUND` | `0x434f52444f4e5f4c45475f46554e44` |
 | `policy_id` | `PAY_ACCREDITED_V1` | `0x5041595f414343524544495445445f5631` |
-| `note_id` | `0` (funding leg) | `0x0` |
+| `note_binding` | `0` (funding leg) | `0x0` |
+| `valid_until` | `1800000300` | `0x6b49d32c` |
 | `token` | STRK | `0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d` |
 | `amount` | `400` | `0x190` |
 | `nonce` | `nonce_0` | `0x6e6f6e63655f30` |
 | `terms_hash` | the settlement terms above | `0x4d1dba11f958448bb5b3d4b7e39ebba33b79ca80ea191539bc1868a628f7d3d` |
 
 ```
-subject_action_hash = 0x699b15a2d12d1e8df2bc0aaafd30dfdf1eb8b48380496855dc89b85ada49c83
+subject_action_hash = 0x15954b6b284f2575533fda03c443131d11a5217061cf1cae05b5055af9c6a22
 ```
 
 ## Reproducing it in TypeScript
@@ -233,7 +292,8 @@ subject_action_hash = 0x699b15a2d12d1e8df2bc0aaafd30dfdf1eb8b48380496855dc89b85a
 import { ec, hash, num, shortString } from "starknet";
 
 const CREDENTIAL_TAG = shortString.encodeShortString("CORDON_CREDENTIAL:V1");
-const SUBJECT_ACTION_TAG = shortString.encodeShortString("CORDON_SUBJECT_ACTION:V3");
+const SUBJECT_ACTION_TAG = shortString.encodeShortString("CORDON_SUBJECT_ACTION:V4");
+export const NOTE_ANY = shortString.encodeShortString("CORDON_NOTE_ANY");
 const SETTLEMENT_TERMS_TAG = shortString.encodeShortString("CORDON_SETTLEMENT_TERMS:V1");
 
 export const LEG = {
@@ -294,7 +354,8 @@ export function subjectActionHash(a: {
   poolAddress: string;
   leg: string;
   policyId: string;
-  noteId: string;
+  noteBinding: string; // the resolved note id, or NOTE_ANY
+  validUntil: bigint; // 0n only when noteBinding names a note
   token: string;
   amount: bigint;
   nonce: string;
@@ -308,7 +369,8 @@ export function subjectActionHash(a: {
       a.poolAddress,
       a.leg,
       a.policyId,
-      a.noteId,
+      a.noteBinding,
+      num.toHex(a.validUntil),
       a.token,
       num.toHex(a.amount),
       a.nonce,
@@ -316,6 +378,12 @@ export function subjectActionHash(a: {
     ]),
   );
 }
+
+// Learning the resolved note id: prepare, read it out, sign, prepare again, submit.
+// `prepared.call` is a fully resolved Starknet Call, so `${openNoteIds[0]}` has already been
+// substituted in its calldata. Locate it at the position your gate calldata puts it.
+const probe = await account.strk20PrepareInvoke(actionsWithPlaceholderSignature, true);
+const noteBinding = readNoteBindingFrom(probe.call.calldata);
 
 // Sign with the STARK curve; the gate verifies with check_ecdsa_signature.
 const { r, s } = ec.starkCurve.sign(credentialHash(credential), issuerPrivateKey);
@@ -338,3 +406,8 @@ Five things to get right in the SDK, because the contract cannot warn you about 
 - **`settlementId` must be random.** Generate it from a CSPRNG. Ids are single-use forever and
   funding is permissionless, so a guessable one can be burned ahead of you — and it is the only
   handle in the event log, so a guessable one is also a correlation key.
+- **Prefer the bound mode.** Resolve the note id with a dry-run `strk20PrepareInvoke`, sign that,
+  and fall back to `NOTE_ANY` only when the wallet will not give it to you. When you do fall back,
+  set `validUntil` to the shortest value that survives a wallet round trip — the gate's ceiling of
+  600 seconds is a limit, not a recommendation — and treat a reverted transaction as a *burned*
+  authorisation: sign a fresh nonce before retrying, rather than resubmitting the published one.

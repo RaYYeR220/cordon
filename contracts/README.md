@@ -88,8 +88,9 @@ Each step has its own panic code so a UI can name the refusal instead of showing
 | 6 | the credential has not lapsed | `CORDON_EXPIRED` |
 | 7 | the issuer has not revoked it | `CORDON_REVOKED` |
 | 8 | the claim is the one the policy asks for | `CORDON_CLAIM_MISMATCH` |
-| 9 | the subject authorised this leg, amount, note, gate, pool, chain and terms | `CORDON_BAD_SUBJECT_SIG` |
-| 9b | with a nonce they have not spent on any leg | `CORDON_NONCE_USED` |
+| 9 | the transaction fills the note the subject bound to, and the authorisation is not stale | `CORDON_NOTE_MISMATCH`, `CORDON_AUTH_EXPIRED`, `CORDON_NEEDS_DEADLINE`, `CORDON_WINDOW_TOO_LONG` |
+| 9b | the subject authorised this leg, amount, note, gate, pool, chain and terms | `CORDON_BAD_SUBJECT_SIG` |
+| 9c | with a nonce they have not spent on any leg | `CORDON_NONCE_USED` |
 | 10 | the amount fits the per-transaction cap | `CORDON_OVER_CAP` |
 | 11 | and fits what is left in this epoch | `CORDON_OVER_VELOCITY` |
 | 12 | book the spend, emit `PolicyPassed` | |
@@ -101,7 +102,7 @@ the same code path, so a payee check can never drift from a payer check.
 
 | Leg | Check | Refusal |
 | --- | --- | --- |
-| `Fund` | it names no open note (there is none) | `CORDON_NOTE_ID_NOT_ZERO` |
+| `Fund` | it names no open note (there is none), and binds that | `CORDON_NOTE_ID_NOT_ZERO`, `CORDON_FUND_NEEDS_BINDING` |
 | `Fund` | the settlement id is fresh — ids are single-use forever, settled or not | `CORDON_SETTLEMENT_EXISTS`, `CORDON_ZERO_SETTLEMENT` |
 | `Fund` | it names a payee | `CORDON_ZERO_PAYEE` |
 | `Fund` | the claim window closes in the future | `CORDON_BAD_EXPIRY` |
@@ -121,6 +122,37 @@ costs them no privacy.
 A refund deliberately does not re-check the payer's credential (a settlement can outlive the
 attestation that funded it, and nothing new leaves the gate) and does not un-book the epoch spend
 (velocity measures value pushed through the gate in a window; a refund does not unspend it).
+
+## Where a payment is allowed to land
+
+An authorisation names the open note it is for, and the gate checks the transaction fills that
+note. This is what makes a leaked authorisation worthless: a thief cannot create a note with
+someone else's id, because a note id is
+`poseidon(NOTE_ID_TAG, channel_key, token, index, 0)` and the channel key commits to its owner's
+private key.
+
+It matters because authorisations do leak. A reverted transaction is included on Starknet with its
+full calldata, and a revert does not burn the nonce — so a claim that fails for an ordinary reason
+publishes a live authorisation to the whole chain. Without the binding, anyone could resubmit it
+into a note of their own and the gate would pay them: the credential, the signature and the payee
+key would all still check out.
+
+The complication is that on the Wallet API route the signer often cannot know the note id. The
+application submits the literal `"${openNoteIds[0]}"` and the wallet substitutes the resolved felt
+at submission time. So the signed field is a *binding*, and it is one of two things:
+
+- **the resolved note id** — the strong mode, and the one to use. It is obtainable:
+  `strk20PrepareInvoke` returns a fully resolved call, so an application can prepare once to read
+  the note id, sign it, and prepare again to submit. The id is stable across that round trip
+  because none of its inputs depend on the invoke calldata; if another transaction moves the note
+  index in between, the second prepare produces a different id and the transaction fails closed.
+- **`NOTE_ANY`** — for flows where it genuinely cannot be obtained. The gate accepts whichever note
+  the transaction fills, which is the redirection exposure above, so it charges for it: an unbound
+  authorisation must carry a deadline and the gate refuses one more than **600 seconds** out. The
+  exposure becomes a window an attacker has to be watching for, rather than a lifetime.
+
+Either way the choice is inside the signed message, so a subject can see which one they made. The
+`Fund` leg fills no note, so its binding is always knowable and `NOTE_ANY` is refused there.
 
 ## What the gate is immutable about
 
@@ -173,6 +205,9 @@ What remains visible, and should be stated plainly:
 - **Velocity windows are absolute**, so `epoch_length` boundaries are public and a subject may move
   `2 × max_per_epoch` across one. Size windows accordingly; the enforced bound is per window, not
   per rolling interval.
+- **A reverted transaction publishes its calldata**, including the authorisation it carried. A
+  bound authorisation is worthless once published; an unbound one is redirectable until its
+  deadline. Treat a revert as having burned the authorisation and sign a fresh nonce to retry.
 
 ## What Cordon does not do
 
