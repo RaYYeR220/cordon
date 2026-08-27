@@ -23,7 +23,7 @@ import {
   type Preflight,
 } from "@cordon/sdk";
 
-import { formatUnits, shorten } from "./format";
+import { formatUnits, prefix, shorten } from "./format";
 
 export type VerdictInput = {
   policy: Policy;
@@ -85,11 +85,11 @@ export function judge(input: VerdictInput): Verdict {
   const spent = epochSpend ?? 0n;
 
   const stepValues: Record<number, string> = {
-    1: shorten(poolAddress, 10, 0).replace("…", ""),
+    1: prefix(poolAddress),
     2: policyLabel,
     3: `${formatUnits(amount)} STRK`,
     4: feltToShortString(credential.issuerId) ?? shorten(credential.issuerId),
-    5: issuerPublicKey ? shorten(issuerPublicKey, 10, 0).replace("…", "") : "key not read",
+    5: issuerPublicKey ? prefix(issuerPublicKey) : "key not read",
     6: daysLeft >= 0 ? `+${daysLeft} d` : `${daysLeft} d`,
     7: revoked ? "listed" : revokedCredentialIds === undefined ? "not read" : "not listed",
     8: `'${summary.claim}'`,

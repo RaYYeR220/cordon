@@ -38,11 +38,11 @@ import {
  * sitting on it, which is what a form has looked like on paper for a century
  * and reads as consequential rather than as a web page.
  *
- * The revoke order is the one place in the product that gets a red keyline,
- * because it is the only irreversible act a person can take here. Revocation is
- * a public permanent write: from the next block every gate on Starknet reads
- * that credential as dead, mid-flight transactions included, and there is no
- * un-revoke. The console says the consequence before the button, not after.
+ * The revoke order carries the weight of the only irreversible act on this
+ * screen — a heavy rule, an ISO 7010 prohibition mark and a typed confirmation
+ * — but not the colour. Red belongs to refusal, and revocation is not a
+ * refusal; it is what manufactures them. The only red here is the code the
+ * revocation will cause, named before the button rather than after it.
  */
 export function IssuerScreen() {
   const issuer = SAMPLE_ISSUERS[0]!;
@@ -76,11 +76,7 @@ export function IssuerScreen() {
         <Stat
           entries={[
             { label: "Active", value: formatCount(SAMPLE_ISSUER_CONSOLE.active) },
-            {
-              label: "Revoked",
-              value: formatCount(SAMPLE_ISSUER_CONSOLE.revoked),
-              tone: "refuse",
-            },
+            { label: "Revoked", value: formatCount(SAMPLE_ISSUER_CONSOLE.revoked) },
             { label: "Expired", value: formatCount(SAMPLE_ISSUER_CONSOLE.expired) },
             {
               label: "Pending screening",
@@ -167,7 +163,7 @@ export function IssuerScreen() {
         <div className="span2">
           <SectionHead
             title="Revoke a credential"
-            meta={<span className="text-red">Irreversible</span>}
+            meta="Irreversible"
             right={
               <>
                 RevocationRegistry <ContractRef address={SAMPLE_REVOCATION_REGISTRY} />
@@ -175,7 +171,7 @@ export function IssuerScreen() {
             }
             level={3}
           />
-          <Rule weight="signal" />
+          <Rule weight="heavy" />
           <div className="order mt-bl">
             <div className="flex items-start gap-bl pb-bl">
               <span className="shrink-0">
@@ -215,7 +211,9 @@ export function IssuerScreen() {
               Type <span className="font-mono text-ink">{confirmPhrase}</span> to arm the button.
               Effective from block {formatCount(SAMPLE_BLOCK + 1)}.{" "}
               {formatCount(SAMPLE_ISSUER_CONSOLE.revoked)} credentials revoked to date — this makes{" "}
-              <span className="text-red">{formatCount(SAMPLE_ISSUER_CONSOLE.revoked + 1)}</span>.
+              <span className="text-ink">{formatCount(SAMPLE_ISSUER_CONSOLE.revoked + 1)}</span>.
+              From that block on, every settlement this bearer attempts is refused with{" "}
+              <span className="font-mono text-red">CORDON_REVOKED</span>.
             </p>
             <p className="note pt-tick border-t border-rule mt-bl">
               The last revocation under this key settled at block{" "}
@@ -342,7 +340,7 @@ export function IssuerScreen() {
         </thead>
         <tbody>
           {SAMPLE_ISSUERS.map((entry) => (
-            <tr key={entry.id} data-verdict={entry.state === "ACTIVE" ? "pass" : "refused"}>
+            <tr key={entry.id} data-verdict={entry.state === "ACTIVE" ? "pass" : undefined}>
               <td>{entry.id}</td>
               <td>{entry.name}</td>
               <td className="pseudonym">{entry.publicKey}</td>
@@ -350,6 +348,12 @@ export function IssuerScreen() {
                 {entry.state === "ACTIVE"
                   ? "Active"
                   : `Deactivated ${entry.stateNote ?? ""}`.trim()}
+                {entry.state === "ACTIVE" ? null : (
+                  <span className="font-mono text-red normal-case tracking-normal">
+                    {" "}
+                    · CORDON_BAD_ISSUER
+                  </span>
+                )}
               </td>
             </tr>
           ))}

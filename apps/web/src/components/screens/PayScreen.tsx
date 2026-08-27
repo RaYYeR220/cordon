@@ -10,14 +10,16 @@ import {
 } from "@cordon/react";
 import { epochResetsAt, type Refusal } from "@cordon/sdk";
 
+import { BindingControl, type BindingMode } from "@/components/record/Binding";
 import { ChecksLadder } from "@/components/record/ChecksLadder";
 import { CordonLine } from "@/components/record/CordonLine";
 import { EpochClock } from "@/components/record/EpochClock";
 import { Folio } from "@/components/record/Folio";
 import { RefusalSignal } from "@/components/record/RefusalSignal";
-import { ContractRef } from "@/components/record/TxRef";
+import { ContractRef, TxRef } from "@/components/record/TxRef";
 import { Row, Rows, Rule, SectionHead } from "@/components/record/primitives";
 import { useEnforcementRun } from "@/hooks/useEnforcementRun";
+import { useNow } from "@/hooks/useNow";
 import { STEP_COUNT } from "@/lib/record/enforcement";
 import {
   daysBetween,
@@ -67,6 +69,9 @@ export function PayScreen() {
   const source = useRecordSource();
   const { config } = useCordonContext();
   const [amount, setAmount] = useState<bigint>(SCENARIOS[2].amount);
+  // Strong binding is the default and stays the default. The two modes are not
+  // equivalent, and the screen never presents them as if they were.
+  const [binding, setBinding] = useState<BindingMode>("strong");
   const gateAddress = source.live ? config.gateAddress : SAMPLE_GATE;
 
   // Live reads. Both no-op on a null id, so the sample record makes no network
@@ -117,7 +122,8 @@ export function PayScreen() {
   const cap = policy && policy.maxAmount > 0n ? policy.maxAmount : null;
   const ceiling = policy && policy.maxPerEpoch > 0n ? policy.maxPerEpoch : null;
   const spent = source.live ? livePolicy.epochSpend : SAMPLE_EPOCH_SPEND;
-  const now = source.live ? Math.floor(Date.now() / 1000) : SAMPLE_NOW;
+  const liveNow = useNow();
+  const now = source.live ? liveNow : SAMPLE_NOW;
   const resetsAt = source.live
     ? livePolicy.epochResetsAt
     : epochResetsAt(SAMPLE_POLICY.policy, SAMPLE_NOW);
@@ -141,7 +147,7 @@ export function PayScreen() {
           { label: "Policy in force", value: source.live ? (livePolicy.label ?? LIVE_POLICY_ID) : SAMPLE_POLICY.id },
           {
             label: "Epoch closes",
-            value: resetsAt === null ? null : formatDuration(resetsAt - now),
+            value: resetsAt === null || now === null ? null : formatDuration(resetsAt - now),
           },
           {
             label: "Payer pseudonym",
@@ -189,6 +195,10 @@ export function PayScreen() {
               typed a second time.
             </p>
           </fieldset>
+
+          <div className="border-t border-ink pt-tick pb-bl">
+            <BindingControl mode={binding} onChange={setBinding} noteId={LIVE_NOTE_ID} />
+          </div>
 
           <Rows>
             <Row
@@ -263,9 +273,7 @@ export function PayScreen() {
               op="withdraw"
               detail={
                 <>
-                  <i className="not-italic text-red">
-                    {formatUnits(amount + POOL_FEE)} STRK
-                  </i>{" "}
+                  <i className="not-italic text-ink">{formatUnits(amount + POOL_FEE)} STRK</i>{" "}
                   from the shielded balance{" "}
                   <span className="text-ink-3">
                     ({formatUnits(amount)} + {formatUnits(POOL_FEE)} pool fee)
@@ -289,8 +297,12 @@ export function PayScreen() {
               detail={
                 <>
                   <b>PolicyGate.privacy_invoke(</b>token, pool, note, policy_id=
-                  <i className="not-italic text-red">
+                  <i className="not-italic text-ink">
                     {source.live ? (LIVE_POLICY_ID ?? "unset") : SAMPLE_POLICY.id}
+                  </i>
+                  , note_binding=
+                  <i className="not-italic text-ink">
+                    {binding === "strong" ? "the resolved note" : "NOTE_ANY"}
                   </i>
                   , payer=Credential&#123;…&#125;, sig_r, sig_s, nonce<b>)</b>
                 </>
@@ -402,10 +414,14 @@ export function PayScreen() {
                 ? `${(Number(policy.epochLength) / 3600).toFixed(0)}h window`
                 : "No velocity limit"
             }
-            right={resetsAt === null ? "—" : `Closes in ${formatDuration(resetsAt - now)}`}
+            right={
+              resetsAt === null || now === null
+                ? "—"
+                : `Closes in ${formatDuration(resetsAt - now)}`
+            }
             level={3}
           />
-          {resetsAt !== null && policy ? (
+          {resetsAt !== null && policy && now !== null ? (
             <EpochClock
               openedAt={resetsAt - Number(policy.epochLength)}
               closesAt={resetsAt}
@@ -490,20 +506,28 @@ export function PayScreen() {
 
       <div aria-live="polite" aria-atomic="false" className="pt-bl">
         {run.settled && refusal ? (
-          <RefusalSignal
-            refusal={refusal}
-            predicted={source.live ? payment.predicted : true}
-            {...(!source.live && refusal.code === HERO_REVERT.code
-              ? {
-                  revertReason: HERO_REVERT.revertReason,
-                  panicFelt: HERO_REVERT.panicFelt,
-                  block: HERO_REVERT.block,
-                  at: HERO_REVERT.at,
-                  fee: HERO_REVERT.fee,
-                  transactionHash: HERO_REVERT.hash,
-                }
-              : { transactionHash: source.live ? payment.transactionHash : null })}
-          />
+          <>
+            <RefusalSignal
+              refusal={refusal}
+              predicted={source.live ? payment.predicted : true}
+              transactionHash={source.live ? payment.transactionHash : null}
+              {...(source.live && payment.error?.revertReason
+                ? { revertReason: payment.error.revertReason }
+                : {})}
+            />
+            {!source.live && refusal.code === HERO_REVERT.code ? (
+              <p className="note pt-tick">
+                Nothing was submitted here — this verdict is the pre-flight&rsquo;s. The sample
+                record separately carries a transaction that reverted with the same code:{" "}
+                <TxRef hash={HERO_REVERT.hash} />, block {formatCount(HERO_REVERT.block)},{" "}
+                {formatInstant(HERO_REVERT.at)}, fee {HERO_REVERT.fee}&thinsp;STRK. Its receipt reads{" "}
+                <span className="font-mono text-ink">
+                  {HERO_REVERT.revertReason} {HERO_REVERT.panicFelt}
+                </span>{" "}
+                (&lsquo;{HERO_REVERT.code}&rsquo;).
+              </p>
+            ) : null}
+          </>
         ) : run.settled ? (
           <div className="border border-ink p-bl">
             <p className="font-display text-sub uppercase tracking-[var(--tracking-label)] text-green">

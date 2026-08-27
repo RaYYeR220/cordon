@@ -24,6 +24,11 @@ import { STEP_COUNT } from "@/lib/record/enforcement";
  * Under `prefers-reduced-motion` the whole thing settles to its final state
  * immediately. Nothing is withheld — the reader sees the same verdict, they
  * simply are not made to wait for it.
+ *
+ * The settled state is also what renders on the server. A public record has to
+ * be readable before a line of JavaScript runs, so the page arrives with the
+ * verdict already on it and the sequence is a replay the client asks for —
+ * never the only way to find out what the gate decided.
  */
 
 export const STEP_INTERVAL_MS = 240;
@@ -59,8 +64,10 @@ export function useEnforcementRun({
 }): EnforcementRun {
   const total = stopAt ?? STEP_COUNT;
 
-  const [phase, setPhase] = useState<RunPhase>("idle");
-  const [ran, setRan] = useState(0);
+  // Starts settled, which is what the server renders and therefore what the
+  // first client render has to agree with. The effect below rewinds and replays.
+  const [phase, setPhase] = useState<RunPhase>("settled");
+  const [ran, setRan] = useState(total);
   const timers = useRef<number[]>([]);
 
   const clear = useCallback(() => {
@@ -70,9 +77,9 @@ export function useEnforcementRun({
 
   const reset = useCallback(() => {
     clear();
-    setRan(0);
-    setPhase("idle");
-  }, [clear]);
+    setRan(total);
+    setPhase("settled");
+  }, [clear, total]);
 
   const run = useCallback(() => {
     clear();
@@ -99,9 +106,17 @@ export function useEnforcementRun({
 
   // A new verdict is a new run: the amount changed, so what the reader is
   // watching is a different question with a different answer.
+  //
+  // The replay starts on the next frame rather than inside the effect body, so
+  // the settled state the server rendered is what paints first and the rewind
+  // happens after it — the reader is never shown an empty ladder they have to
+  // wait out to learn the answer.
   useEffect(() => {
-    run();
-    return clear;
+    const frame = window.requestAnimationFrame(() => run());
+    return () => {
+      window.cancelAnimationFrame(frame);
+      clear();
+    };
     // `run` is stable per `total`; `autoRunKey` is what a caller changes to ask
     // for a fresh sequence.
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -26,14 +26,11 @@ export function useChainHead(enabled: boolean, pollMs = 30_000): ChainHead {
     block: null,
     at: null,
     error: null,
-    loading: enabled,
+    loading: false,
   });
 
   useEffect(() => {
-    if (!enabled) {
-      setHead({ block: null, at: null, error: null, loading: false });
-      return;
-    }
+    if (!enabled) return;
 
     const provider = new RpcProvider({ nodeUrl: config.rpcUrl });
     let cancelled = false;
@@ -59,6 +56,7 @@ export function useChainHead(enabled: boolean, pollMs = 30_000): ChainHead {
     return () => {
       cancelled = true;
       if (timer !== null) window.clearInterval(timer);
+      setHead({ block: null, at: null, error: null, loading: false });
     };
   }, [enabled, config.rpcUrl, pollMs]);
 

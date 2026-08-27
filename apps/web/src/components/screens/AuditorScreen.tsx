@@ -89,7 +89,6 @@ export function AuditorScreen() {
             cap2Label={String(disclosure.epochTo)}
             capLabel={String(disclosure.epochFrom)}
             amount={scopeTo}
-            spent={scopeFrom}
             permitLabel="Out of scope"
             forbidLabel="Out of scope"
             headline={
@@ -321,7 +320,9 @@ export function AuditorScreen() {
  * `412 ms · local` beside itself so nobody mistakes the pacing for the timing.
  */
 function useLeafCount(total: number): number {
-  const [matched, setMatched] = useState(0);
+  // Starts complete: that is what the server renders, and a verified proof must
+  // not depend on JavaScript to say so. The effect rewinds and replays it.
+  const [matched, setMatched] = useState(total);
 
   useEffect(() => {
     const reduced =
@@ -329,17 +330,17 @@ function useLeafCount(total: number): number {
       window.matchMedia &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-    if (reduced) {
-      setMatched(total);
-      return;
-    }
+    if (reduced) return;
 
-    setMatched(0);
     const timers: number[] = [];
-    for (let leaf = 1; leaf <= total; leaf += 1) {
-      timers.push(window.setTimeout(() => setMatched(leaf), leaf * 90));
-    }
+    const frame = window.requestAnimationFrame(() => {
+      setMatched(0);
+      for (let leaf = 1; leaf <= total; leaf += 1) {
+        timers.push(window.setTimeout(() => setMatched(leaf), leaf * 90));
+      }
+    });
     return () => {
+      window.cancelAnimationFrame(frame);
       for (const timer of timers) window.clearTimeout(timer);
     };
   }, [total]);

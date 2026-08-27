@@ -18,6 +18,22 @@
 
 import { allRefusals, type Refusal } from "@cordon/sdk";
 
+/**
+ * Which of a step's refusals names the step.
+ *
+ * A gate step can fail several ways and the SDK lists them all under one step
+ * number, in its own order. This picks which one heads the rung, following the
+ * order of the enforcement table in `contracts/README.md` — the sub-checks (2b,
+ * 2c, 3b…) are real, they just are not what the step is *for*. It orders codes
+ * and nothing else: every word a reader sees still comes from the SDK.
+ */
+const HEADLINE = [
+  "CORDON_BAD_POOL",
+  "CORDON_NO_POLICY",
+  "CORDON_NO_VALUE",
+  "CORDON_BAD_SUBJECT_SIG",
+];
+
 /** One rung: a step of the gate's pipeline, and every way it can refuse. */
 export type Step = {
   /** The gate's own step number. */
@@ -42,12 +58,21 @@ function buildSteps(): Step[] {
 
   const steps: Step[] = [...byNumber.entries()]
     .sort((a, b) => a[0] - b[0])
-    .map(([number, refusals]) => ({
-      number,
-      refusals,
-      code: refusals[0]?.code ?? null,
-      title: refusals[0]?.title ?? "",
-    }));
+    .map(([number, refusals]) => {
+      const ordered = [...refusals].sort((a, b) => {
+        const rank = (code: string) => {
+          const index = HEADLINE.indexOf(code);
+          return index === -1 ? HEADLINE.length : index;
+        };
+        return rank(a.code) - rank(b.code);
+      });
+      return {
+        number,
+        refusals: ordered,
+        code: ordered[0]?.code ?? null,
+        title: ordered[0]?.title ?? "",
+      };
+    });
 
   const last = steps.length ? steps[steps.length - 1]!.number : 0;
   steps.push({

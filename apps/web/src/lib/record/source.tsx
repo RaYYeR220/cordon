@@ -51,11 +51,14 @@ export function RecordSourceProvider({
 
   useEffect(() => {
     if (!gateConfigured) return;
-    try {
-      if (window.localStorage.getItem(STORAGE_KEY) === "live") setModeState("live");
-    } catch {
-      // A browser that refuses storage simply gets the default.
-    }
+    const frame = window.requestAnimationFrame(() => {
+      try {
+        if (window.localStorage.getItem(STORAGE_KEY) === "live") setModeState("live");
+      } catch {
+        // A browser that refuses storage simply gets the default.
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [gateConfigured]);
 
   const setMode = useCallback(

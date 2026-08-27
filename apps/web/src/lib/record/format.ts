@@ -56,7 +56,14 @@ export function formatPercent(numerator: bigint, denominator: bigint): string {
 /** `0x06b3d9f1…a6c9e2b` — enough to recognise, too little to retype from memory. */
 export function shorten(hex: string, lead = 8, tail = 7): string {
   if (hex.length <= lead + tail + 1) return hex;
-  return `${hex.slice(0, lead)}…${hex.slice(-tail)}`;
+  // `slice(-0)` is `slice(0)` and would hand back the whole string, so a
+  // zero-length tail has to be its own branch rather than a clever expression.
+  return tail === 0 ? `${hex.slice(0, lead)}…` : `${hex.slice(0, lead)}…${hex.slice(-tail)}`;
+}
+
+/** Just the first `length` characters, for a value used as a short identifier. */
+export function prefix(hex: string, length = 10): string {
+  return hex.slice(0, length);
 }
 
 /** `2026-08-26 14:42:07 UTC`, always UTC, always the same width. */

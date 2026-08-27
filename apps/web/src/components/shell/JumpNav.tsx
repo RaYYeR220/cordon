@@ -3,14 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-/** The five screens, in the order the record prints them. */
-export const SCREENS = [
-  { number: "01", href: "/pay", title: "Pay", blurb: "Compose a gated private payment" },
-  { number: "02", href: "/passport", title: "Passport", blurb: "The credential, and what it is good for" },
-  { number: "03", href: "/issuer", title: "Issuer console", blurb: "Issue, revoke, publish" },
-  { number: "04", href: "/monitor", title: "Gate monitor", blurb: "The public record of decisions" },
-  { number: "05", href: "/auditor", title: "Auditor", blurb: "Verify a scoped disclosure" },
-] as const;
+import { SCREENS } from "@/lib/record/screens";
 
 /**
  * The printed contents strip.

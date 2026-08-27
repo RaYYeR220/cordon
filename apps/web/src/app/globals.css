@@ -1,5 +1,11 @@
+/* Cascade layers, declared before anything else so the order is ours. Unlayered
+   CSS outranks every layer, so the package stylesheet has to be pulled into a
+   layer of its own — otherwise its zero-specificity `:where()` rules would beat
+   the overrides at the bottom of this file. */
+@layer theme, base, cordon-package, components, utilities;
+
 @import "tailwindcss";
-@import "@cordon/react/styles.css";
+@import "@cordon/react/styles.css" layer(cordon-package);
 
 /* ═══════════════════════════════════════════════════════════════════════════
    PUBLIC RECORD — the design system, as Tailwind v4 theme tokens.
@@ -149,12 +155,6 @@
     font-feature-settings: "tnum" 1;
   }
 
-  /* Radius is 0 everywhere, without exception — including inside the package's
-     own components, which are dressed through their custom properties below. */
-  * {
-    border-radius: 0;
-  }
-
   :focus-visible {
     outline: 2px solid var(--color-ink);
     outline-offset: 2px;
@@ -277,7 +277,7 @@
 
   @media (min-width: 560px) {
     .rw {
-      grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+      grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
     }
   }
 
@@ -292,11 +292,13 @@
 
   .rw > dd,
   .rw > .v {
+    min-width: 0;
     font-family: var(--font-mono);
     font-size: var(--text-fine);
     line-height: 18px;
     letter-spacing: 0;
     overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   @media (min-width: 560px) {
@@ -344,8 +346,8 @@
   .cordonline {
     --cap: 71.43%;
     --amt: 92.86%;
-    --track-h: 55px;
-    --bar-top: 21px;
+    --track-h: 66px;
+    --bar-top: 22px;
     --bar-h: 17px;
     padding-top: var(--spacing-gut);
     margin: 0;
@@ -537,6 +539,34 @@
     border-color: var(--color-ink);
   }
 
+  /* A disclosure boundary is a scope, not a ban. It borrows the graphic and
+     none of the colour: red belongs to refusal and to nothing else. */
+  .cordonline--scoped .cordonline__zone--permit {
+    background: var(--hatch-ink);
+    color: var(--color-ink-3);
+  }
+
+  /* A scope is hatched on BOTH sides of the disclosed window: the region past
+     the second boundary is out of scope too, and the window between them is
+     the only part that was ever handed over. */
+  .cordonline--scoped .cordonline__zone--forbid {
+    left: var(--cap2);
+  }
+
+  .cordonline--scoped .cordonline__over {
+    display: none;
+  }
+
+  .cordonline__bar--scoped {
+    left: var(--cap);
+    width: calc(var(--cap2) - var(--cap));
+  }
+
+  .cordonline--scoped .cordonline__endcap,
+  .cordonline__endcap--within {
+    color: var(--color-ink-2);
+  }
+
   /* lane 4 · the amount endcap */
   .cordonline__endcap {
     position: absolute;
@@ -605,6 +635,7 @@
   }
 
   .cordonline__verdict {
+    margin-left: auto;
     font-family: var(--font-display);
     font-size: var(--text-agate);
     letter-spacing: var(--tracking-label);
@@ -796,7 +827,7 @@
 
   .check {
     display: grid;
-    grid-template-columns: 22px minmax(0, 1fr) minmax(0, auto) 72px;
+    grid-template-columns: 22px minmax(0, 1fr) minmax(0, 22ch) 72px;
     gap: var(--spacing-tick);
     align-items: baseline;
     border-bottom: 1px solid var(--color-rule);
@@ -809,7 +840,7 @@
   /* Discrete, mechanical verification: each row lands whole at 240ms. There is
      no partial state and nothing tweens, because a check either ran or it did
      not. */
-  .check--ran {
+  .check.check--ran {
     color: var(--color-ink);
   }
 
@@ -817,7 +848,7 @@
     color: var(--color-green);
   }
 
-  .check--failed {
+  .check.check--failed {
     color: var(--color-red);
     border-bottom: 2px solid var(--color-red);
     background: color-mix(in srgb, var(--color-red) 7%, transparent);
@@ -835,18 +866,24 @@
   }
 
   .check__name {
+    min-width: 0;
     font-family: var(--font-mono);
     letter-spacing: 0;
-    overflow-wrap: anywhere;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .check__value {
+    min-width: 0;
     font-family: var(--font-mono);
     font-size: var(--text-agate);
     text-align: right;
     color: inherit;
     opacity: 0.75;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .check__result {
@@ -1258,11 +1295,12 @@
     cursor: not-allowed;
   }
 
-  /* The one button that carries consequence. */
+  /* The one button that carries consequence. Its weight is size, inversion and
+     a 3px rule — not colour. Red names refusals and nothing else. */
   .btn--heavy {
     background: var(--color-ink);
     color: var(--color-paper);
-    border-top: 3px solid var(--color-red);
+    border-top: 3px solid var(--color-ink);
     padding: var(--spacing-bl) var(--spacing-gut);
     font-size: var(--text-body);
     width: 100%;
@@ -1271,13 +1309,12 @@
   }
 
   .btn--heavy:hover:not(:disabled) {
-    background: var(--color-red);
-    border-top-color: var(--color-ink);
-    color: #ffffff;
+    background: var(--color-paper);
+    color: var(--color-ink);
   }
 
   .order {
-    border-left: 3px solid var(--color-red);
+    border-left: 3px solid var(--color-ink);
     padding-left: var(--spacing-bl);
   }
 
@@ -1460,4 +1497,13 @@
     animation-delay: 0ms !important;
     transition-duration: 1ms !important;
   }
+}
+
+/* Radius is 0 everywhere, without exception. Deliberately unlayered so it
+   outranks every layer, this file's own included: there is no corner in this
+   product that is allowed to be round. */
+*,
+*::before,
+*::after {
+  border-radius: 0;
 }

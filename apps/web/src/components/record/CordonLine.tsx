@@ -92,7 +92,10 @@ export function CordonLine({
   const spentAt = spent === null || spent === undefined ? null : ratio(spent, scaleTop);
 
   const readable = amountAt !== null;
-  const crossing = capAt !== null && amountAt !== null && amountAt > capAt;
+  // A scope has two edges and no overshoot: the bar spans the disclosed window
+  // and nothing about it is a refusal, so nothing about it is red.
+  const twoEdged = scoped && cap2At !== null;
+  const crossing = !scoped && capAt !== null && amountAt !== null && amountAt > capAt;
 
   const style = {
     "--cap": capAt === null ? "100%" : percent(capAt),
@@ -134,16 +137,24 @@ export function CordonLine({
         </figcaption>
       ) : null}
 
+      {/* A meter has to have a value. When the amount could not be read there is
+          no value to give, so this is not a meter — it is an image of an empty
+          track that says why. Announcing a meter with no `aria-valuenow` would
+          be worse than either. */}
       <div
         className="cordonline__track"
-        role="meter"
-        aria-label={typeof headline === "string" ? headline : "Limit"}
-        aria-valuemin={0}
-        aria-valuemax={Number(formatUnits(scaleTop, 18, 2).replace(/,/g, ""))}
         {...(amount !== null
-          ? { "aria-valuenow": Number(formatUnits(amount, 18, 2).replace(/,/g, "")) }
-          : {})}
-        aria-valuetext={spoken}
+          ? {
+              role: "meter" as const,
+              "aria-valuemin": 0,
+              "aria-valuemax": Number(formatUnits(scaleTop, 18, 2).replace(/,/g, "")),
+              "aria-valuenow": Number(formatUnits(amount, 18, 2).replace(/,/g, "")),
+              "aria-valuetext": spoken,
+            }
+          : { role: "img" as const })}
+        aria-label={
+          amount === null ? spoken : typeof headline === "string" ? headline : "Limit"
+        }
       >
         {capAt !== null ? (
           <>
@@ -159,20 +170,24 @@ export function CordonLine({
         {/* Lane 2. A track with no readable amount is striped and carries no bar
             at all, rather than a bar of length zero. */}
         {readable ? (
-          <>
-            {spentAt !== null ? (
-              <>
-                <div
-                  className="cordonline__bar cordonline__bar--banded"
-                  style={{ width: percent(spentAt) }}
-                />
-                <div className="cordonline__pending" />
-              </>
-            ) : (
-              <div className="cordonline__bar" />
-            )}
-            {crossing ? <div className="cordonline__over" /> : null}
-          </>
+          twoEdged ? (
+            <div className="cordonline__bar cordonline__bar--scoped" />
+          ) : (
+            <>
+              {spentAt !== null ? (
+                <>
+                  <div
+                    className="cordonline__bar cordonline__bar--banded"
+                    style={{ width: percent(spentAt) }}
+                  />
+                  <div className="cordonline__pending" />
+                </>
+              ) : (
+                <div className="cordonline__bar" />
+              )}
+              {crossing ? <div className="cordonline__over" /> : null}
+            </>
+          )
         ) : (
           <div className="cordonline__unreadable" />
         )}

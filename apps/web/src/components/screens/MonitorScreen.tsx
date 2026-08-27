@@ -261,18 +261,23 @@ export function MonitorScreen() {
             right="These codes have no cordon line to draw"
             level={3}
           />
-          <div className="grid grid-cols-1 gap-x-gut md:grid-cols-2">
+          {/* One grid, not one per row: bars that do not share an axis are not a
+              comparison, they are four unrelated rules. */}
+          <div className="grid grid-cols-[minmax(0,22ch)_minmax(0,1fr)_5ch] items-center gap-x-bl">
             {lineless.map((entry) => (
-              <div
-                key={entry.code}
-                className="grid grid-cols-[minmax(0,17ch)_minmax(0,1fr)_5ch] items-center gap-tick border-b border-rule py-hair"
-              >
-                <span className="font-mono text-agate">{entry.code}</span>
-                <span
-                  className="hairline"
-                  style={{ width: `${(entry.count / maxLineless) * 100}%`, height: 3 }}
-                />
-                <span className="font-display text-body text-right">{entry.count}</span>
+              <div key={entry.code} className="contents">
+                <span className="font-mono text-agate border-b border-rule py-hair">
+                  {entry.code}
+                </span>
+                <span className="border-b border-rule py-hair">
+                  <span
+                    className="hairline block"
+                    style={{ width: `${(entry.count / maxLineless) * 100}%`, height: 3 }}
+                  />
+                </span>
+                <span className="font-display text-body text-right border-b border-rule py-hair">
+                  {entry.count}
+                </span>
               </div>
             ))}
           </div>

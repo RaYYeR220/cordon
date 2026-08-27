@@ -2,7 +2,7 @@ import Link from "next/link";
 
 import { CordonLine } from "@/components/record/CordonLine";
 import { Rule, SectionHead } from "@/components/record/primitives";
-import { SCREENS } from "@/components/shell/JumpNav";
+import { SCREENS } from "@/lib/record/screens";
 import { STEP_COUNT } from "@/lib/record/enforcement";
 import { formatUnits, strk } from "@/lib/record/format";
 import { HONEST_LIMITS } from "@/lib/record/sample";
@@ -22,31 +22,38 @@ export const metadata = {
 export default function CoverPage() {
   return (
     <article>
+      {/* The title page. One sentence, set at the size the whole editorial
+          effect depends on — the gap between 10px metadata and a line of type
+          you cannot help reading first. */}
+      <div className="pt-pad">
+        <p className="label pb-bl">The thesis</p>
+        <h1 className="font-display tracking-[var(--tracking-tight)] text-head leading-[33px] sm:text-display sm:leading-[48px] lg:text-mega lg:leading-[88px]">
+          A gate the pool
+          <br />
+          cannot settle around.
+        </h1>
+      </div>
+
       <div className="grid4 items-start pt-pad pb-gut">
-        <div className="span3">
-          <p className="label pb-bl">The thesis</p>
-          <h1 className="font-display text-head leading-[33px] tracking-[var(--tracking-tight)] md:text-display md:leading-[52px] max-w-[22ch]">
-            A gate the pool <br />
-            cannot settle around.
-          </h1>
-          <p className="lede mt-gut max-w-[54ch]">
+        <div className="span2">
+          <p className="lede">
             Shielded value on Starknet routes through a Cairo anonymizer on its way back into a
             private note. Cordon puts a credential and a policy in that path — so a party who is
             unaccredited, revoked, expired, over their cap or over their velocity budget cannot move
             pool funds at all. The gate panics and the whole transaction reverts.
           </p>
-          <p className="lede mt-bl max-w-[54ch]">
+          <p className="lede mt-bl">
             Identities stay private. The amount, and the fact that a check passed, are public. That
             trade is the product, and every screen in this record is an argument that it is the
             right one.
           </p>
         </div>
 
-        <div>
+        <div className="span2">
           <p className="label pb-tick">Start here</p>
           <Link
             href="/pay"
-            className="btn btn--heavy border-0 hover:bg-red"
+            className="btn btn--heavy border-0"
             aria-label="Watch the gate refuse a payment, on the Pay screen"
           >
             <span>Watch the gate refuse</span>
@@ -92,7 +99,11 @@ export default function CoverPage() {
           <li key={screen.href}>
             <Link href={screen.href} className="block border-0 hover:bg-transparent group">
               <span className="label">{screen.number}</span>
-              <span className="block font-display text-sub leading-[22px] tracking-[var(--tracking-tight)] group-hover:text-red">
+              <span
+                aria-hidden="true"
+                className="mb-tick block h-px bg-rule group-hover:bg-ink"
+              />
+              <span className="block font-display text-sub leading-[22px] tracking-[var(--tracking-tight)]">
                 {screen.title}
               </span>
               <span className="mt-hair block text-fine leading-[18px] text-ink-2">
