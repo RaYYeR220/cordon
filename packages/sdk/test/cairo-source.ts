@@ -25,10 +25,11 @@ export function readContractsFile(...segments: string[]): string {
 
 /**
  * Resolve a Cairo felt literal: `0x…` hex, `1_800_086_400` decimal, or `'SHORT_STRING'`.
- * Returns `null` for anything else, such as a bare identifier.
+ * A trailing `.try_into().unwrap()`, which is how a `ContractAddress` literal is written, is
+ * ignored. Returns `null` for anything else, such as a bare identifier.
  */
 function literalToFelt(text: string): Felt | null {
-  const value = text.trim();
+  const value = text.trim().replace(/\.try_into\(\)\s*\.unwrap\(\)$/, "").trim();
   const short = /^'([^']*)'$/.exec(value);
   if (short) return shortStringToFelt(short[1] as string);
   if (/^0x[0-9a-fA-F_]+$/.test(value)) return toFelt(value.replace(/_/g, ""));
@@ -37,28 +38,95 @@ function literalToFelt(text: string): Felt | null {
 }
 
 /**
- * Every `felt252` binding in a Cairo file — `let x: felt252 = …` and `const X: felt252 = …` alike.
- * Values that are not literals are skipped rather than guessed at.
+ * Every felt-valued name in a Cairo file: `let x: felt252 = …`, `const X: felt252 = …`, and
+ * zero-argument fixture helpers such as `fn fixture_gate() -> ContractAddress { 0x… }`.
+ *
+ * The helpers matter because the Cairo fixture spells its preimages out using them, so a reader
+ * that only understood `let` bindings would silently fail to resolve a span and skip the very
+ * conformance check it exists to perform. Values that are not literals are left out rather than
+ * guessed at.
  */
 export function feltBindings(source: string): Map<string, Felt> {
   const bindings = new Map<string, Felt>();
-  const pattern = /(?:let|const)\s+(?:mut\s+)?(\w+)\s*:\s*felt252\s*=\s*([\s\S]*?);/g;
-  for (const match of source.matchAll(pattern)) {
-    const felt = literalToFelt(match[2] as string);
+
+  // Zero-argument fixture helpers first, because a `let` binding often just calls one.
+  const helper = /fn\s+(\w+)\s*\(\s*\)\s*->\s*(?:felt252|ContractAddress)\s*\{([\s\S]*?)\n\}/g;
+  for (const match of source.matchAll(helper)) {
+    const body = (match[2] as string)
+      .split("\n")
+      .map((line) => line.replace(/\/\/.*$/, "").trim())
+      .filter((line) => line.length > 0)
+      .join(" ");
+    const felt = literalToFelt(body);
+    if (felt !== null) {
+      bindings.set(`${match[1] as string}()`, felt);
+      bindings.set(match[1] as string, felt);
+    }
+  }
+
+  const assignment = /(?:let|const)\s+(?:mut\s+)?(\w+)\s*:\s*felt252\s*=\s*([\s\S]*?);/g;
+  for (const match of source.matchAll(assignment)) {
+    const raw = (match[2] as string).trim();
+    const felt = literalToFelt(raw) ?? bindings.get(raw) ?? null;
     if (felt !== null) bindings.set(match[1] as string, felt);
   }
+
   return bindings;
 }
 
 /**
- * Every `[a, b, c].span()` literal in a Cairo file, with each element resolved through
- * {@link feltBindings}.
+ * Split a Cairo file into function bodies.
+ *
+ * Bindings have to be resolved per function, not per file. Each spelled-out preimage test declares
+ * its own `let tag: felt252 = …`, and a single flat map would let the last one win — which silently
+ * misclassifies one preimage as another and drops a conformance check.
+ */
+function functionBodies(source: string): string[] {
+  const bodies: string[] = [];
+  const opener = /\bfn\s+\w+\s*(?:<[^>]*>)?\s*\(/g;
+
+  for (const match of source.matchAll(opener)) {
+    const brace = source.indexOf("{", match.index + match[0].length);
+    if (brace === -1) continue;
+    let depth = 0;
+    for (let index = brace; index < source.length; index += 1) {
+      const character = source[index];
+      if (character === "{") depth += 1;
+      else if (character === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          bodies.push(source.slice(brace, index + 1));
+          break;
+        }
+      }
+    }
+  }
+
+  return bodies;
+}
+
+/**
+ * Every `[a, b, c].span()` literal in a Cairo file, with each element resolved through the
+ * bindings visible where it appears.
  *
  * A span whose elements cannot all be resolved is dropped: it is not a spelled-out preimage, which
  * is the only thing this is looking for.
  */
 export function feltSpans(source: string): Felt[][] {
-  const bindings = feltBindings(source);
+  const fileScope = feltBindings(source);
+  const spans: Felt[][] = [];
+
+  for (const body of functionBodies(source)) {
+    // Names declared inside the function shadow anything at file scope.
+    const bindings = new Map(fileScope);
+    for (const [name, felt] of feltBindings(body)) bindings.set(name, felt);
+    spans.push(...spansIn(body, bindings));
+  }
+
+  return spans;
+}
+
+function spansIn(source: string, bindings: Map<string, Felt>): Felt[][] {
   const spans: Felt[][] = [];
 
   for (const match of source.matchAll(/\[([^[\]]*?)\]\s*\.span\(\)/gs)) {
@@ -85,17 +153,31 @@ export function feltSpans(source: string): Felt[][] {
 }
 
 /** The domain-separation tags as `contracts/src/hashing.cairo` declares them. */
-export function readDomainTags(): { credential: Felt; subjectAction: Felt } {
-  const source = readContractsFile("src", "hashing.cairo");
-  const bindings = feltBindings(source);
+export function readDomainTags(): {
+  credential: Felt;
+  subjectAction: Felt;
+  settlementTerms: Felt;
+} {
+  const bindings = feltBindings(readContractsFile("src", "hashing.cairo"));
   const credential = bindings.get("CREDENTIAL_TAG");
   const subjectAction = bindings.get("SUBJECT_ACTION_TAG");
-  if (!credential || !subjectAction) {
-    throw new Error(
-      "could not find CREDENTIAL_TAG and SUBJECT_ACTION_TAG in contracts/src/hashing.cairo",
-    );
+  const settlementTerms = bindings.get("SETTLEMENT_TERMS_TAG");
+  if (!credential || !subjectAction || !settlementTerms) {
+    throw new Error("could not read all three domain tags from contracts/src/hashing.cairo");
   }
-  return { credential, subjectAction };
+  return { credential, subjectAction, settlementTerms };
+}
+
+/** The leg tags as `contracts/src/hashing.cairo` declares them. */
+export function readLegTags(): Record<string, Felt> {
+  const bindings = feltBindings(readContractsFile("src", "hashing.cairo"));
+  const legs: Record<string, Felt> = {};
+  for (const name of ["DIRECT", "FUND", "CLAIM", "REFUND"]) {
+    const felt = bindings.get(name);
+    if (!felt) throw new Error(`could not read the ${name} leg tag from hashing.cairo`);
+    legs[name] = felt;
+  }
+  return legs;
 }
 
 /** One spelled-out preimage and the hash the Cairo suite pins for it. */
@@ -112,33 +194,48 @@ export interface CairoVector {
  * Spans are classified by their first element — the domain tag — rather than by the name of the
  * test that contains them, so renaming a Cairo test does not silently drop a conformance check.
  */
-export function readPinnedVectors(): { credential: CairoVector; subjectAction: CairoVector } {
+export function readPinnedVectors(): {
+  credential: CairoVector;
+  settlementTerms: CairoVector;
+  subjectAction: CairoVector;
+} {
   const source = readContractsFile("src", "tests", "test_hashing.cairo");
   const bindings = feltBindings(source);
   const tags = readDomainTags();
 
-  const credentialHash = bindings.get("FIXTURE_CREDENTIAL_HASH");
-  const actionHash = bindings.get("FIXTURE_ACTION_HASH");
-  if (!credentialHash || !actionHash) {
-    throw new Error(
-      "could not find FIXTURE_CREDENTIAL_HASH and FIXTURE_ACTION_HASH in " +
-        "contracts/src/tests/test_hashing.cairo",
-    );
-  }
+  const pick = (name: string): Felt => {
+    const felt = bindings.get(name);
+    if (!felt) {
+      throw new Error(`could not find ${name} in contracts/src/tests/test_hashing.cairo`);
+    }
+    return felt;
+  };
 
   const spans = feltSpans(source);
-  const credentialSpan = spans.find((span) => span[0] === tags.credential);
-  const actionSpan = spans.find((span) => span[0] === tags.subjectAction);
-  if (!credentialSpan || !actionSpan) {
-    throw new Error(
-      "contracts/src/tests/test_hashing.cairo no longer spells out both preimages as literal " +
-        "felt spans; the conformance test cannot read the Cairo side any more",
-    );
-  }
+  const spanFor = (tag: Felt, what: string): Felt[] => {
+    const span = spans.find((candidate) => candidate[0] === tag);
+    if (!span) {
+      throw new Error(
+        `contracts/src/tests/test_hashing.cairo no longer spells the ${what} preimage out as a ` +
+          "literal felt span; the conformance test cannot read the Cairo side any more",
+      );
+    }
+    return span;
+  };
 
   return {
-    credential: { preimage: credentialSpan, expected: credentialHash },
-    subjectAction: { preimage: actionSpan, expected: actionHash },
+    credential: {
+      preimage: spanFor(tags.credential, "credential"),
+      expected: pick("FIXTURE_CREDENTIAL_HASH"),
+    },
+    settlementTerms: {
+      preimage: spanFor(tags.settlementTerms, "settlement terms"),
+      expected: pick("FIXTURE_TERMS_HASH"),
+    },
+    subjectAction: {
+      preimage: spanFor(tags.subjectAction, "subject action"),
+      expected: pick("FIXTURE_ACTION_HASH"),
+    },
   };
 }
 

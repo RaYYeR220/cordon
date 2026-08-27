@@ -6,7 +6,13 @@
  * Cairo and TypeScript debuggable rather than a wall of entropy.
  */
 
-import type { CredentialHashInput, SubjectActionHashInput } from "../src/hashing.js";
+import type {
+  CredentialHashInput,
+  SettlementTermsHashInput,
+  SubjectActionHashInput,
+} from "../src/hashing.js";
+import { settlementTermsHash } from "../src/hashing.js";
+import { createGateContext } from "../src/context.js";
 
 /** The STRK fee token, identical on every Starknet network. */
 export const STRK = "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d";
@@ -14,6 +20,21 @@ export const STRK = "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f42
 /** The `PolicyGate` address the Cairo fixture uses. Recognisable on sight, not a deployment. */
 export const FIXTURE_GATE =
   "0x02c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de001";
+
+/** The privacy pool the Cairo fixture binds to. */
+export const FIXTURE_POOL =
+  "0x0900100c0011ea1100c0011ea1100c0011ea1100c0011ea1100c0011ea11002";
+
+/** The payee pseudonym the fixture settlement names. */
+export const FIXTURE_PAYEE_KEY =
+  "0x066ee00a11ce00a11ce00a11ce00a11ce00a11ce00a11ce00a11ce00a11ce00";
+
+/** The chain, gate and pool every fixture authorisation is bound to. */
+export const FIXTURE_CONTEXT = createGateContext({
+  chainId: "SN_MAIN",
+  gate: FIXTURE_GATE,
+  pool: FIXTURE_POOL,
+});
 
 export const CREDENTIAL_FIXTURE: CredentialHashInput = {
   issuerId: "CORDON_KYC",
@@ -23,15 +44,26 @@ export const CREDENTIAL_FIXTURE: CredentialHashInput = {
   expiresAt: 1_800_086_400,
 };
 
-/** The `:V2` action fixture, matching `fixture_action_hash` in the Cairo suite. */
+/** The settlement terms nested inside the fixture action. */
+export const SETTLEMENT_TERMS_FIXTURE: SettlementTermsHashInput = {
+  settlementId: "stl_0",
+  payeeSubjectKey: FIXTURE_PAYEE_KEY,
+  payeeClaimPolicyId: "RECV_KYC_L2_V1",
+  expiresAt: 1_800_007_200,
+};
+
+/** The `:V3` action fixture: a `Fund` leg, matching `fixture_action_hash` in the Cairo suite. */
 export const SUBJECT_ACTION_FIXTURE: SubjectActionHashInput = {
   chainId: "SN_MAIN",
   gateAddress: FIXTURE_GATE,
+  poolAddress: FIXTURE_POOL,
+  leg: "Fund",
   policyId: "PAY_ACCREDITED_V1",
-  noteId: "note_0",
+  noteId: 0,
   token: STRK,
   amount: 400,
   nonce: "nonce_0",
+  termsHash: settlementTermsHash(SETTLEMENT_TERMS_FIXTURE),
 };
 
 /**
@@ -44,3 +76,7 @@ export const TEST_ISSUER_PRIVATE_KEY =
 /** A fixed subject key, on the same terms. */
 export const TEST_SUBJECT_PRIVATE_KEY =
   "0x6b3f2c1d0e9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b";
+
+/** A settlement id with enough entropy to pass the guessability check. */
+export const TEST_SETTLEMENT_ID =
+  "0x7d4c1f9a3e8b5602d1c4a7f0e93b6852";

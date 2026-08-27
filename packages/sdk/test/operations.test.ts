@@ -1,149 +1,294 @@
 /**
- * Calldata and action arrays.
+ * Calldata, action arrays, and the invariants that make them safe.
  *
- * Two things go wrong here in practice and both are silent. A placeholder that gets hex-encoded
- * becomes an address nobody owns, and the gate refuses with `CORDON_BAD_POOL`. A field in the
- * wrong position shifts everything after it, and the gate refuses with something that looks like a
- * signature problem. So these tests assert exact positions and exact literals, against the
- * argument order `contracts/src/interfaces.cairo` and the struct order `types.cairo` declare.
+ * Three things go wrong here in practice and all three are silent. A placeholder that gets
+ * hex-encoded becomes an address nobody owns, and the gate refuses with `CORDON_BAD_POOL`. A field
+ * in the wrong position shifts everything after it, and the gate refuses with something that looks
+ * like a signature problem. And an action array whose withdraw disagrees with the signed amount
+ * either strands value as dust or reverts with `CORDON_UNDERFUNDED`.
+ *
+ * The first two are covered by asserting exact positions against `interfaces.cairo` and
+ * `types.cairo`. The third is covered by the API shape — there is only one place to write an
+ * amount — and the tests here hold that shape to account.
  */
 
 import { describe, expect, it } from "vitest";
 import {
   FUND_NOTE_ID,
   GATE_OPERATION_VARIANT,
+  LEG_TAGS,
   OPEN_NOTE,
+  OperationError,
   POOL_ADDRESS_PLACEHOLDER,
+  SettlementError,
   assertValidActions,
-  authorizeAction,
+  authorizeClaim,
+  authorizeDirect,
+  authorizeFund,
+  authorizeRefund,
+  buildActions,
   buildClaimActions,
   buildDirectActions,
   buildFundActions,
   buildRefundActions,
   credentialCalldata,
-  encodeClaimCalldata,
-  encodeDirectCalldata,
-  encodeFundCalldata,
+  encodeGateCalldata,
   encodeGateOperation,
-  encodeRefundCalldata,
   encodeSubjectAuthorization,
   isPlaceholder,
   issueCredential,
   openNoteIdPlaceholder,
-  signAction,
+  quotedSettlementHash,
+  randomSettlementId,
+  settlementTermsHash,
   subjectPublicKey,
+  toFelt,
   validateActions,
-  verifySubjectAction,
+  verifyHash,
+  type Settlement,
   type Strk20Action,
 } from "../src/index.js";
 import {
   CREDENTIAL_FIXTURE,
+  FIXTURE_CONTEXT,
   FIXTURE_GATE,
+  FIXTURE_PAYEE_KEY,
+  FIXTURE_POOL,
   STRK,
   TEST_ISSUER_PRIVATE_KEY,
+  TEST_SETTLEMENT_ID,
   TEST_SUBJECT_PRIVATE_KEY,
 } from "./fixtures.js";
 
-const PAYEE = "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde";
-const SETTLEMENT_ID = "SETTLE_1";
-const SETTLEMENT_ID_FELT = "0x534554544c455f31";
+const PAYEE_ADDRESS = "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde";
 const RESOLVED_NOTE_ID = "note_0";
+const SUBJECT_KEY = subjectPublicKey(TEST_SUBJECT_PRIVATE_KEY);
 
-const credential = issueCredential(CREDENTIAL_FIXTURE, TEST_ISSUER_PRIVATE_KEY);
+const payerCredential = issueCredential(CREDENTIAL_FIXTURE, TEST_ISSUER_PRIVATE_KEY);
+const payeeCredential = issueCredential(
+  { ...CREDENTIAL_FIXTURE, credentialId: "CRED_0002", subjectPublicKey: SUBJECT_KEY },
+  TEST_ISSUER_PRIVATE_KEY,
+);
 
-const signingContext = {
-  chainId: "SN_MAIN",
-  gate: FIXTURE_GATE,
-  token: STRK,
-  amount: 400n,
-} as const;
-
-const payer = authorizeAction(
+const direct = authorizeDirect(
   {
-    ...signingContext,
+    context: FIXTURE_CONTEXT,
+    token: STRK,
     policyId: "PAY_ACCREDITED_V1",
+    credential: payerCredential,
+    amount: 400n,
     noteId: RESOLVED_NOTE_ID,
     nonce: "nonce_0",
-    credential,
   },
   TEST_SUBJECT_PRIVATE_KEY,
 );
 
-const fundPayer = authorizeAction(
+const fund = authorizeFund(
   {
-    ...signingContext,
+    context: FIXTURE_CONTEXT,
+    token: STRK,
     policyId: "PAY_ACCREDITED_V1",
-    noteId: FUND_NOTE_ID,
+    credential: payerCredential,
+    amount: 400n,
+    payeeSubjectKey: FIXTURE_PAYEE_KEY,
+    payeeClaimPolicyId: "RECV_KYC_L2_V1",
+    expiresAt: 1_800_007_200,
+    settlementId: TEST_SETTLEMENT_ID,
     nonce: "nonce_1",
-    credential,
   },
   TEST_SUBJECT_PRIVATE_KEY,
 );
 
-const payeeSignature = signAction(
+const settlement: Settlement = {
+  token: toFelt(STRK),
+  amount: 400n,
+  payerSubjectKey: "0x1ce8adcb0d0e5e0d0a3e2b8b8f9e5c3b2a1908070605040302010f0e0d0c0b0",
+  payeeSubjectKey: SUBJECT_KEY,
+  payerPolicyId: toFelt("PAY_ACCREDITED_V1"),
+  payeeClaimPolicyId: toFelt("RECV_KYC_L2_V1"),
+  expiresAt: 1_800_007_200,
+  status: "Funded",
+};
+
+const claim = authorizeClaim(
   {
-    ...signingContext,
-    policyId: "PAY_KYC_L2_V1",
+    context: FIXTURE_CONTEXT,
+    settlement,
+    settlementId: TEST_SETTLEMENT_ID,
+    credential: payeeCredential,
     noteId: RESOLVED_NOTE_ID,
     nonce: "nonce_2",
   },
   TEST_SUBJECT_PRIVATE_KEY,
 );
 
-const base = { gate: FIXTURE_GATE, token: STRK } as const;
-const direct = { ...base, amount: 400n, payee: PAYEE, payer };
-const fund = {
-  ...base,
-  amount: 400n,
-  payer: fundPayer,
-  settlementId: SETTLEMENT_ID,
-  payeeClaimPolicyId: "PAY_KYC_L2_V1",
-  expiresAt: 1_800_086_400,
-};
-const claim = {
-  ...base,
-  settlementId: SETTLEMENT_ID,
-  credential,
-  signature: payeeSignature,
-  nonce: "nonce_2",
-  recipient: PAYEE,
-};
-const refund = {
-  ...base,
-  settlementId: SETTLEMENT_ID,
-  signature: payeeSignature,
-  nonce: "nonce_3",
-  recipient: PAYEE,
-};
+const refund = authorizeRefund(
+  {
+    context: FIXTURE_CONTEXT,
+    settlement,
+    settlementId: TEST_SETTLEMENT_ID,
+    noteId: RESOLVED_NOTE_ID,
+    nonce: "nonce_3",
+  },
+  TEST_SUBJECT_PRIVATE_KEY,
+);
 
-describe("signing an authorisation", () => {
+describe("signing a leg", () => {
   it("produces a signature the gate's own check would accept", () => {
-    expect(
-      verifySubjectAction(
-        {
-          chainId: "SN_MAIN",
-          gateAddress: FIXTURE_GATE,
-          policyId: "PAY_ACCREDITED_V1",
-          noteId: RESOLVED_NOTE_ID,
-          token: STRK,
-          amount: 400n,
-          nonce: "nonce_0",
-        },
-        subjectPublicKey(TEST_SUBJECT_PRIVATE_KEY),
-        payer.signature,
-      ),
-    ).toBe(true);
+    expect(verifyHash(direct.actionHash, SUBJECT_KEY, direct.payer.signature)).toBe(true);
+    expect(verifyHash(fund.actionHash, SUBJECT_KEY, fund.payer.signature)).toBe(true);
+    expect(verifyHash(claim.actionHash, SUBJECT_KEY, claim.signature)).toBe(true);
+    expect(verifyHash(refund.actionHash, SUBJECT_KEY, refund.signature)).toBe(true);
   });
 
-  it("packages the policy, credential, signature and nonce the contract expects", () => {
-    expect(payer.policyId).toBe("0x5041595f414343524544495445445f5631");
-    expect(payer.nonce).toBe("0x6e6f6e63655f30");
-    expect(payer.credential).toEqual(credential);
+  it("signs a different hash for every leg, so one cannot be replayed as another", () => {
+    const hashes = new Set([
+      direct.actionHash,
+      fund.actionHash,
+      claim.actionHash,
+      refund.actionHash,
+    ]);
+    expect(hashes.size).toBe(4);
+  });
+
+  it("uses a literal zero terms hash on Direct and a real one everywhere else", () => {
+    expect(direct.termsHash).toBe("0x0");
+    expect(fund.termsHash).toBe(
+      settlementTermsHash({
+        settlementId: TEST_SETTLEMENT_ID,
+        payeeSubjectKey: FIXTURE_PAYEE_KEY,
+        payeeClaimPolicyId: "RECV_KYC_L2_V1",
+        expiresAt: 1_800_007_200,
+      }),
+    );
+    expect(claim.termsHash).toBe(quotedSettlementHash(TEST_SETTLEMENT_ID));
+    expect(refund.termsHash).toBe(quotedSettlementHash(TEST_SETTLEMENT_ID));
+    expect(claim.termsHash).not.toBe(fund.termsHash);
   });
 
   it("signs zero as the note id on a Fund, which reserves no note", () => {
     expect(FUND_NOTE_ID).toBe("0x0");
-    expect(fundPayer.signature).not.toEqual(payer.signature);
+    expect(fund.noteId).toBe("0x0");
+  });
+
+  it("takes the claim's amount and policy from the stored settlement, not from the caller", () => {
+    expect(claim.amount).toBe(settlement.amount);
+    expect(refund.amount).toBe(settlement.amount);
+  });
+
+  it("refuses to sign a claim for someone who is not the named payee", () => {
+    expect(() =>
+      authorizeClaim(
+        {
+          context: FIXTURE_CONTEXT,
+          settlement,
+          settlementId: TEST_SETTLEMENT_ID,
+          credential: payerCredential,
+          noteId: RESOLVED_NOTE_ID,
+        },
+        TEST_SUBJECT_PRIVATE_KEY,
+      ),
+    ).toThrow(OperationError);
+  });
+
+  it("refuses to fund without a named payee", () => {
+    expect(() =>
+      authorizeFund(
+        {
+          context: FIXTURE_CONTEXT,
+          token: STRK,
+          policyId: "PAY_ACCREDITED_V1",
+          credential: payerCredential,
+          amount: 400n,
+          payeeSubjectKey: 0,
+          payeeClaimPolicyId: "RECV_KYC_L2_V1",
+          expiresAt: 1_800_007_200,
+        },
+        TEST_SUBJECT_PRIVATE_KEY,
+      ),
+    ).toThrow(/payee/);
+  });
+
+  it("refuses to sign a leg for zero", () => {
+    expect(() =>
+      authorizeDirect(
+        {
+          context: FIXTURE_CONTEXT,
+          token: STRK,
+          policyId: "PAY_ACCREDITED_V1",
+          credential: payerCredential,
+          amount: 0n,
+          noteId: RESOLVED_NOTE_ID,
+        },
+        TEST_SUBJECT_PRIVATE_KEY,
+      ),
+    ).toThrow(OperationError);
+  });
+
+  it("draws a fresh nonce when none is given", () => {
+    const sign = (): string =>
+      authorizeDirect(
+        {
+          context: FIXTURE_CONTEXT,
+          token: STRK,
+          policyId: "PAY_ACCREDITED_V1",
+          credential: payerCredential,
+          amount: 400n,
+          noteId: RESOLVED_NOTE_ID,
+        },
+        TEST_SUBJECT_PRIVATE_KEY,
+      ).payer.nonce;
+    expect(sign()).not.toBe(sign());
+  });
+});
+
+describe("settlement ids", () => {
+  it("generates one at random when the caller does not supply one", () => {
+    const ids = new Set(
+      Array.from({ length: 8 }, () =>
+        authorizeFund(
+          {
+            context: FIXTURE_CONTEXT,
+            token: STRK,
+            policyId: "PAY_ACCREDITED_V1",
+            credential: payerCredential,
+            amount: 400n,
+            payeeSubjectKey: FIXTURE_PAYEE_KEY,
+            payeeClaimPolicyId: "RECV_KYC_L2_V1",
+            expiresAt: 1_800_007_200,
+          },
+          TEST_SUBJECT_PRIVATE_KEY,
+        ).settlementId,
+      ),
+    );
+    expect(ids.size).toBe(8);
+  });
+
+  it("refuses a guessable id rather than documenting the risk", () => {
+    // Funding is permissionless and ids are single-use forever, so an invoice number or a counter
+    // can be burned ahead of the payer for the price of one unit — and it is the only handle in
+    // the event log, so it is a correlation key too.
+    const base = {
+      context: FIXTURE_CONTEXT,
+      token: STRK,
+      policyId: "PAY_ACCREDITED_V1",
+      credential: payerCredential,
+      amount: 400n,
+      payeeSubjectKey: FIXTURE_PAYEE_KEY,
+      payeeClaimPolicyId: "RECV_KYC_L2_V1",
+      expiresAt: 1_800_007_200,
+    };
+    for (const settlementId of ["INVOICE_42", 1, 0, "0xdeadbeef"]) {
+      expect(() =>
+        authorizeFund({ ...base, settlementId }, TEST_SUBJECT_PRIVATE_KEY),
+      ).toThrow(SettlementError);
+    }
+  });
+
+  it("draws 128 bits from the CSPRNG", () => {
+    const id = randomSettlementId();
+    expect(BigInt(id)).toBeGreaterThan(1n << 64n);
+    expect(BigInt(id)).toBeLessThan(1n << 128n);
   });
 });
 
@@ -152,80 +297,66 @@ describe("operation encoding", () => {
     expect(GATE_OPERATION_VARIANT).toEqual({ Direct: 0, Fund: 1, Claim: 2, Refund: 3 });
   });
 
-  it("encodes a subject authorisation as eleven felts in struct order", () => {
-    expect(encodeSubjectAuthorization(payer)).toEqual([
-      payer.policyId,
-      ...credentialCalldata(credential),
-      payer.signature.r,
-      payer.signature.s,
-      payer.nonce,
+  it("encodes a subject authorisation as twelve felts, amount in the middle", () => {
+    const felts = encodeSubjectAuthorization(direct.payer);
+    expect(felts).toEqual([
+      direct.payer.policyId,
+      ...credentialCalldata(payerCredential),
+      "0x190",
+      direct.payer.signature.r,
+      direct.payer.signature.s,
+      direct.payer.nonce,
     ]);
-    expect(encodeSubjectAuthorization(payer)).toHaveLength(11);
+    expect(felts).toHaveLength(12);
+    expect(felts[8]).toBe("0x190");
   });
 
   it("encodes Direct as its index and the payer's authorisation", () => {
-    const felts = encodeGateOperation({ kind: "Direct", payer });
+    const felts = encodeGateOperation(direct);
     expect(felts[0]).toBe("0x0");
-    expect(felts.slice(1)).toEqual(encodeSubjectAuthorization(payer));
-    expect(felts).toHaveLength(12);
+    expect(felts.slice(1)).toEqual(encodeSubjectAuthorization(direct.payer));
+    expect(felts).toHaveLength(13);
   });
 
   it("encodes Fund as index, the payer's authorisation, then the escrow terms", () => {
-    const felts = encodeGateOperation({
-      kind: "Fund",
-      payer: fundPayer,
-      settlementId: SETTLEMENT_ID,
-      payeeClaimPolicyId: "PAY_KYC_L2_V1",
-      expiresAt: 1_800_086_400,
-    });
+    const felts = encodeGateOperation(fund);
     expect(felts[0]).toBe("0x1");
-    expect(felts.slice(1, 12)).toEqual(encodeSubjectAuthorization(fundPayer));
-    expect(felts.slice(12)).toEqual([
-      SETTLEMENT_ID_FELT,
-      "0x5041595f4b59435f4c325f5631",
-      "0x6b4b2380",
+    expect(felts.slice(1, 13)).toEqual(encodeSubjectAuthorization(fund.payer));
+    expect(felts.slice(13)).toEqual([
+      toFelt(TEST_SETTLEMENT_ID),
+      toFelt(FIXTURE_PAYEE_KEY),
+      "0x524543565f4b59435f4c325f5631",
+      "0x6b49ee20",
     ]);
-    expect(felts).toHaveLength(15);
+    expect(felts).toHaveLength(17);
   });
 
   it("encodes Claim with the payee's credential inline and no policy id", () => {
-    const felts = encodeGateOperation({
-      kind: "Claim",
-      settlementId: SETTLEMENT_ID,
-      credential,
-      signature: payeeSignature,
-      nonce: "nonce_2",
-    });
+    const felts = encodeGateOperation(claim);
     expect(felts[0]).toBe("0x2");
-    expect(felts[1]).toBe(SETTLEMENT_ID_FELT);
-    expect(felts.slice(2, 9)).toEqual(credentialCalldata(credential));
-    expect(felts.slice(9)).toEqual([payeeSignature.r, payeeSignature.s, "0x6e6f6e63655f32"]);
+    expect(felts[1]).toBe(toFelt(TEST_SETTLEMENT_ID));
+    expect(felts.slice(2, 9)).toEqual(credentialCalldata(payeeCredential));
+    expect(felts.slice(9)).toEqual([claim.signature.r, claim.signature.s, claim.nonce]);
     expect(felts).toHaveLength(12);
   });
 
   it("encodes Refund as index, settlement, signature and nonce, with no credential", () => {
-    const felts = encodeGateOperation({
-      kind: "Refund",
-      settlementId: SETTLEMENT_ID,
-      signature: payeeSignature,
-      nonce: "nonce_3",
-    });
-    expect(felts).toEqual([
+    expect(encodeGateOperation(refund)).toEqual([
       "0x3",
-      SETTLEMENT_ID_FELT,
-      payeeSignature.r,
-      payeeSignature.s,
-      "0x6e6f6e63655f33",
+      toFelt(TEST_SETTLEMENT_ID),
+      refund.signature.r,
+      refund.signature.s,
+      refund.nonce,
     ]);
   });
 });
 
 describe("privacy_invoke calldata", () => {
-  const calldata = encodeDirectCalldata(direct);
+  const calldata = encodeGateCalldata(direct);
 
   it("lays the arguments out as (operation, token, pool_address, note_id)", () => {
     expect(calldata).toEqual([
-      ...encodeGateOperation({ kind: "Direct", payer }),
+      ...encodeGateOperation(direct),
       "0x4718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d",
       POOL_ADDRESS_PLACEHOLDER,
       openNoteIdPlaceholder(0),
@@ -245,63 +376,120 @@ describe("privacy_invoke calldata", () => {
   });
 
   it("sends zero as the note id on a Fund, matching what the payer signed", () => {
-    expect(encodeFundCalldata(fund).at(-1)).toBe(FUND_NOTE_ID);
+    expect(encodeGateCalldata(fund).at(-1)).toBe(FUND_NOTE_ID);
   });
 
   it("sends the open-note placeholder on a Claim and a Refund", () => {
-    expect(encodeClaimCalldata(claim).at(-1)).toBe("${openNoteIds[0]}");
-    expect(encodeRefundCalldata(refund).at(-1)).toBe("${openNoteIds[0]}");
+    expect(encodeGateCalldata(claim).at(-1)).toBe("${openNoteIds[0]}");
+    expect(encodeGateCalldata(refund).at(-1)).toBe("${openNoteIds[0]}");
+  });
+
+  it("refuses a note id override that disagrees with what was signed", () => {
+    // Sending a different note than the signature covers is CORDON_BAD_SUBJECT_SIG, which says
+    // nothing about which field disagreed. Catch it here instead.
+    expect(() => encodeGateCalldata(direct, { noteId: "0x9" })).toThrow(OperationError);
+    expect(() => encodeGateCalldata(fund, { noteId: "0x1" })).toThrow(/note id must be zero/);
+  });
+
+  it("accepts a note id override that matches, for a call against a mock pool", () => {
+    const withPool = encodeGateCalldata(direct, {
+      poolAddress: "0xbeef",
+      noteId: toFelt(RESOLVED_NOTE_ID),
+    });
+    expect(withPool.at(-2)).toBe("0xbeef");
+    expect(withPool.at(-1)).toBe(toFelt(RESOLVED_NOTE_ID));
   });
 
   it("can point at another open note when a transaction reserves several", () => {
-    expect(encodeDirectCalldata({ ...direct, openNoteIndex: 2 }).at(-1)).toBe("${openNoteIds[2]}");
-  });
-
-  it("lets a test override the placeholders for a direct call against a mock pool", () => {
-    const withPool = encodeDirectCalldata({ ...direct, poolAddress: "0xbeef", noteId: "0x7" });
-    expect(withPool.at(-2)).toBe("0xbeef");
-    expect(withPool.at(-1)).toBe("0x7");
+    expect(encodeGateCalldata(direct, { openNoteIndex: 2 }).at(-1)).toBe("${openNoteIds[2]}");
   });
 });
 
 describe("action arrays", () => {
   it("builds Direct as withdraw, an open note, then invoke", () => {
-    const actions = buildDirectActions(direct);
+    const actions = buildDirectActions({ authorization: direct, payee: PAYEE_ADDRESS });
     expect(actions.map((action) => action.type)).toEqual(["withdraw", "transfer", "invoke"]);
     expect(actions[0]).toMatchObject({ amount: "0x190", recipient: normalize(FIXTURE_GATE) });
-    expect(actions[1]).toMatchObject({ amount: OPEN_NOTE, recipient: normalize(PAYEE) });
+    expect(actions[1]).toMatchObject({ amount: OPEN_NOTE, recipient: normalize(PAYEE_ADDRESS) });
     expect(actions[2]).toMatchObject({ contract: normalize(FIXTURE_GATE) });
-    expect(calldataOf(actions[2])).toEqual(encodeDirectCalldata(direct));
+    expect(calldataOf(actions[2])).toEqual(encodeGateCalldata(direct));
   });
 
   it("builds Fund as withdraw then invoke, with no note to fill", () => {
-    const actions = buildFundActions(fund);
+    const actions = buildFundActions({ authorization: fund });
     expect(actions.map((action) => action.type)).toEqual(["withdraw", "invoke"]);
-    expect(calldataOf(actions[1])).toEqual(encodeFundCalldata(fund));
+    expect(calldataOf(actions[1])).toEqual(encodeGateCalldata(fund));
   });
 
   it("builds Claim as an open note then invoke, with no withdraw", () => {
-    const actions = buildClaimActions(claim);
+    const actions = buildClaimActions({ authorization: claim, recipient: PAYEE_ADDRESS });
     expect(actions.map((action) => action.type)).toEqual(["transfer", "invoke"]);
-    expect(actions[0]).toMatchObject({ amount: OPEN_NOTE, recipient: normalize(PAYEE) });
-    expect(calldataOf(actions[1])).toEqual(encodeClaimCalldata(claim));
+    expect(actions[0]).toMatchObject({ amount: OPEN_NOTE, recipient: normalize(PAYEE_ADDRESS) });
+    expect(calldataOf(actions[1])).toEqual(encodeGateCalldata(claim));
   });
 
   it("builds Refund the same shape as Claim, back to the payer", () => {
-    const actions = buildRefundActions(refund);
+    const actions = buildRefundActions({ authorization: refund, recipient: PAYEE_ADDRESS });
     expect(actions.map((action) => action.type)).toEqual(["transfer", "invoke"]);
-    expect(calldataOf(actions[1])).toEqual(encodeRefundCalldata(refund));
+    expect(calldataOf(actions[1])).toEqual(encodeGateCalldata(refund));
+  });
+
+  it("dispatches on the leg through one entry point", () => {
+    expect(buildActions({ authorization: direct, payee: PAYEE_ADDRESS })).toEqual(
+      buildDirectActions({ authorization: direct, payee: PAYEE_ADDRESS }),
+    );
+    expect(buildActions({ authorization: fund })).toEqual(buildFundActions({ authorization: fund }));
   });
 
   it("accepts all four arrays as valid STRK20 transactions", () => {
     for (const actions of [
-      buildDirectActions(direct),
-      buildFundActions(fund),
-      buildClaimActions(claim),
-      buildRefundActions(refund),
+      buildDirectActions({ authorization: direct, payee: PAYEE_ADDRESS }),
+      buildFundActions({ authorization: fund }),
+      buildClaimActions({ authorization: claim, recipient: PAYEE_ADDRESS }),
+      buildRefundActions({ authorization: refund, recipient: PAYEE_ADDRESS }),
     ]) {
       expect(validateActions(actions)).toEqual([]);
       expect(() => assertValidActions(actions)).not.toThrow();
+    }
+  });
+});
+
+describe("the withdraw amount cannot disagree with the signed amount", () => {
+  it("takes the withdraw amount from the authorisation, not from a second parameter", () => {
+    // This is the structural guarantee, not a convention: there is no `amount` on any builder, so
+    // there is nowhere for a second, different number to be written. Signing for less than is
+    // withdrawn strands the difference as dust the payer cannot recover; signing for more reverts
+    // with CORDON_UNDERFUNDED.
+    const actions = buildDirectActions({ authorization: direct, payee: PAYEE_ADDRESS });
+    const withdrawn = BigInt((actions[0] as { amount: string }).amount);
+    const signed = direct.payer.amount;
+    const encoded = BigInt(encodeSubjectAuthorization(direct.payer)[8] as string);
+
+    expect(withdrawn).toBe(signed);
+    expect(encoded).toBe(signed);
+  });
+
+  it("holds for a Fund too", () => {
+    const actions = buildFundActions({ authorization: fund });
+    expect(BigInt((actions[0] as { amount: string }).amount)).toBe(fund.payer.amount);
+  });
+
+  it("puts no withdraw in a Claim or a Refund, so no value can be stranded there", () => {
+    for (const actions of [
+      buildClaimActions({ authorization: claim, recipient: PAYEE_ADDRESS }),
+      buildRefundActions({ authorization: refund, recipient: PAYEE_ADDRESS }),
+    ]) {
+      expect(actions.some((action) => action.type === "withdraw")).toBe(false);
+    }
+  });
+
+  it("keeps the gate, the token and the pool in one place as well", () => {
+    const actions = buildDirectActions({ authorization: direct, payee: PAYEE_ADDRESS });
+    expect((actions[0] as { recipient: string }).recipient).toBe(normalize(FIXTURE_GATE));
+    expect((actions[2] as { contract: string }).contract).toBe(normalize(FIXTURE_GATE));
+    expect(direct.context.pool).toBe(normalize(FIXTURE_POOL));
+    for (const action of actions) {
+      expect((action as { token?: string }).token ?? normalize(STRK)).toBe(normalize(STRK));
     }
   });
 });
@@ -346,6 +534,15 @@ describe("action validation", () => {
 
   it("throws with every problem listed", () => {
     expect(() => assertValidActions([invoke])).toThrow(/INVOKE_ONLY/);
+  });
+});
+
+describe("leg tags", () => {
+  it("are short strings, so adding a variant cannot renumber them", () => {
+    expect(LEG_TAGS.Direct).toBe("0x434f52444f4e5f4c45475f444952454354");
+    expect(LEG_TAGS.Fund).toBe("0x434f52444f4e5f4c45475f46554e44");
+    expect(LEG_TAGS.Claim).toBe("0x434f52444f4e5f4c45475f434c41494d");
+    expect(LEG_TAGS.Refund).toBe("0x434f52444f4e5f4c45475f524546554e44");
   });
 });
 

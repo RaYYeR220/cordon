@@ -9,6 +9,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CREDENTIAL_TAG,
+  LEG_TAGS,
   SUBJECT_ACTION_TAG,
   credentialHash,
   poseidon,
@@ -64,11 +65,28 @@ describe("action preimage coverage", () => {
     expect(subjectActionHash({ ...SUBJECT_ACTION_FIXTURE, nonce: "nonce_1" })).not.toBe(base);
   });
 
-  it("binds the chain and the gate, which is what :V2 exists for", () => {
+  it("moves when the leg or the settlement terms move, which is what :V3 exists for", () => {
+    // Under :V2 these two were outside the message, so one signature authorised a Direct payment
+    // and a Fund into an escrow whose terms the payer never saw — one nonce, one legitimate use.
+    expect(subjectActionHash({ ...SUBJECT_ACTION_FIXTURE, leg: "Direct" })).not.toBe(base);
+    expect(subjectActionHash({ ...SUBJECT_ACTION_FIXTURE, leg: "Claim" })).not.toBe(base);
+    expect(subjectActionHash({ ...SUBJECT_ACTION_FIXTURE, termsHash: "0x0" })).not.toBe(base);
+    expect(subjectActionHash({ ...SUBJECT_ACTION_FIXTURE, poolAddress: "0x1234" })).not.toBe(base);
+  });
+
+  it("binds the chain, the gate and the pool, tag first", () => {
     const preimage = subjectActionPreimage(SUBJECT_ACTION_FIXTURE);
-    expect(preimage).toHaveLength(8);
+    expect(preimage).toHaveLength(11);
     expect(preimage[1]).toBe("0x534e5f4d41494e");
     expect(preimage[2]).toBe("0x2c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de00c0de001");
+    expect(preimage[3]).toBe("0x900100c0011ea1100c0011ea1100c0011ea1100c0011ea1100c0011ea11002");
+    expect(preimage[4]).toBe(LEG_TAGS.Fund);
+  });
+
+  it("refuses a leg it does not know rather than hashing a zero in its place", () => {
+    expect(() =>
+      subjectActionHash({ ...SUBJECT_ACTION_FIXTURE, leg: "Settle" as never }),
+    ).toThrow(/unknown leg/);
   });
 
   it("accepts an amount in any representation and hashes it identically", () => {
