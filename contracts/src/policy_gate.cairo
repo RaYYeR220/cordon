@@ -261,6 +261,26 @@ pub mod PolicyGate {
             self.privacy_pool.read()
         }
 
+        /// The issuer registry this gate trusts. Fixed at construction and never changes.
+        ///
+        /// This and the two below exist so a reviewer can check the gate's wiring with three
+        /// one-word calls instead of reading a deployment transaction's calldata. A wrong pointer
+        /// here is only fixable by redeploying, which makes it exactly the kind of thing that
+        /// should be verifiable from outside rather than taken on trust.
+        fn issuer_registry(self: @ContractState) -> ContractAddress {
+            self.issuer_registry.read()
+        }
+
+        /// The revocation registry this gate trusts. Fixed at construction and never changes.
+        fn revocation_registry(self: @ContractState) -> ContractAddress {
+            self.revocation_registry.read()
+        }
+
+        /// The policy registry this gate trusts. Fixed at construction and never changes.
+        fn policy_registry(self: @ContractState) -> ContractAddress {
+            self.policy_registry.read()
+        }
+
         /// The settlement booked under `settlement_id`, or a zeroed record with status `None`.
         fn get_settlement(self: @ContractState, settlement_id: felt252) -> Settlement {
             self.settlements.entry(settlement_id).read()
@@ -300,9 +320,10 @@ pub mod PolicyGate {
             self._epoch_index(registry.get_policy(policy_id).epoch_length)
         }
 
-        /// The registries this gate reads: `(issuer, revocation, policy)`.
+        /// All three registries in one call: `(issuer, revocation, policy)`.
         ///
-        /// There is no setter, on purpose. A registry pointer decides what a credential *means*;
+        /// There is no setter for any of them, on purpose. A registry pointer decides what a
+        /// credential *means*;
         /// re-pointing one while a settlement is open would let whoever did it mint a credential
         /// that satisfies that settlement's claim policy and take the money. That is not a
         /// migration path, it is a seizure, and no timelock makes it something else. Migrate by

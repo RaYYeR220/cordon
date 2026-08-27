@@ -84,6 +84,12 @@ pub trait IPolicyGate<TState> {
     ) -> Span<OpenNoteDeposit>;
     /// The privacy pool this gate serves. Fixed at construction and never changes.
     fn privacy_pool(self: @TState) -> ContractAddress;
+    /// The issuer registry this gate trusts. Fixed at construction and never changes.
+    fn issuer_registry(self: @TState) -> ContractAddress;
+    /// The revocation registry this gate trusts. Fixed at construction and never changes.
+    fn revocation_registry(self: @TState) -> ContractAddress;
+    /// The policy registry this gate trusts. Fixed at construction and never changes.
+    fn policy_registry(self: @TState) -> ContractAddress;
     /// The settlement booked under `settlement_id`. Reads back with
     /// [`SettlementStatus::None`](crate::types::SettlementStatus) if there is none.
     fn get_settlement(self: @TState, settlement_id: felt252) -> Settlement;
@@ -99,7 +105,8 @@ pub trait IPolicyGate<TState> {
     /// The epoch index a settlement would be booked into right now. Zero for policies with no
     /// velocity limit, and for an id that was never published.
     fn current_epoch(self: @TState, policy_id: felt252) -> u64;
-    /// The registries this gate reads: `(issuer, revocation, policy)`. Fixed at construction.
+    /// All three registries in one call: `(issuer, revocation, policy)`. The same values the
+    /// three getters above return, for callers that would rather make one call than three.
     fn registries(self: @TState) -> (ContractAddress, ContractAddress, ContractAddress);
     /// Moves unaccounted dust — and only dust — out of the gate. Owner only.
     ///
