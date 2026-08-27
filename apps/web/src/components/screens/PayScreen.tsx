@@ -86,7 +86,6 @@ export function PayScreen() {
     payee: source.live ? LIVE_PAYEE : null,
     credential: credential.credential,
     subjectPrivateKey: credential.subject?.privateKey ?? null,
-    noteId: LIVE_NOTE_ID,
   });
 
   const sample = useMemo(

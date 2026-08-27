@@ -1,5 +1,16 @@
 /**
  * Submitting STRK20 transactions and reading back what happened.
+ *
+ * Two routes, and which one a payment takes is not a style choice.
+ *
+ * `submitActions` hands an action array to the wallet, which proves it, adds its own fee action
+ * and submits. That is the route for a plain STRK20 operation.
+ *
+ * A **gated** payment cannot use it. The subject signs the note its value is allowed to land in,
+ * and only the wallet knows that id — so the SDK prepares the transaction first to learn it, signs
+ * bound to it, prepares again, and what comes back is a resolved call plus a proof.
+ * `submitPreparedCall` sends that. The wallet adds no fee action in this mode, so the submitting
+ * account pays the fee itself.
  */
 
 import { num } from "starknet";
@@ -11,10 +22,40 @@ import type { EventProvider } from "./events.js";
 import type { ReadProvider } from "./registries.js";
 import type { Strk20NormalizedError, Strk20SubmitResult } from "./types.js";
 
-/** The subset of `WalletAccountV6` this module needs. */
+/** The subset of `WalletAccountV6` the wallet-submits route needs. */
 export type Strk20Submitter = {
   strk20InvokeTransaction: (actions: Strk20Action[]) => Promise<{ transaction_hash: string }>;
 };
+
+/**
+ * The subset of `WalletAccountV6` the bound-authorisation route needs.
+ *
+ * `strk20PrepareInvoke` is optional on a wallet. Without it the resolved note id cannot be known
+ * before signing, and there is no safe way to proceed. The answer is to report that, never to sign
+ * an unbound authorisation instead.
+ */
+export type Strk20Preparer = {
+  strk20PrepareInvoke: (
+    actions: Strk20Action[],
+    simulate?: boolean,
+  ) => Promise<{ call: unknown; proof?: unknown }>;
+  executeWithProof: (call: unknown, proof?: unknown) => Promise<{ transaction_hash: string }>;
+};
+
+/**
+ * Whether this wallet can do the prepare-twice flow at all.
+ *
+ * A structural check rather than a call, because asking costs a proof. A wallet missing either
+ * half cannot carry a bound authorisation, and that is a state to render, not to work around.
+ */
+export function supportsPreparedInvoke(account: unknown): account is Strk20Preparer {
+  if (typeof account !== "object" || account === null) return false;
+  const candidate = account as Record<string, unknown>;
+  return (
+    typeof candidate["strk20PrepareInvoke"] === "function" &&
+    typeof candidate["executeWithProof"] === "function"
+  );
+}
 
 /** The one provider method the submit path needs beyond the reads. */
 export interface TransactionWaiter {
@@ -146,7 +187,48 @@ export async function submitActions(
   }
 
   options.onSubmitted?.(transactionHash);
+  return waitForOutcome(provider, transactionHash, options);
+}
 
+/**
+ * Submit a call the wallet already prepared and proved.
+ *
+ * This is the tail of the prepare-twice flow: the note id is settled, the subject's signature is
+ * bound to it, and the proof in hand is the one for exactly these actions. Re-deriving the
+ * transaction here would defeat the point, so the resolved call goes out untouched.
+ *
+ * The wait budget matches `submitActions` — proof verification happens on chain, so a timeout is
+ * reported as `unconfirmed` rather than as a failure.
+ */
+export async function submitPreparedCall(
+  submitter: Strk20Preparer,
+  provider: TransactionWaiter,
+  prepared: { call: unknown; proof?: unknown },
+  options: Omit<SubmitOptions, "skipValidation"> = {},
+): Promise<SubmitOutcome> {
+  let transactionHash: string;
+  try {
+    const submitted = await submitter.executeWithProof(prepared.call, prepared.proof);
+    transactionHash = submitted.transaction_hash;
+  } catch (error) {
+    return { ok: false, transactionHash: null, error: normalizeError(error) };
+  }
+
+  options.onSubmitted?.(transactionHash);
+  return waitForOutcome(provider, transactionHash, options);
+}
+
+/**
+ * Wait for a receipt and reduce it to an outcome.
+ *
+ * Shared by both submit routes so a reverted gated payment and a reverted plain action report
+ * their revert reason identically — the refusal decoder upstream sees one shape.
+ */
+async function waitForOutcome(
+  provider: TransactionWaiter,
+  transactionHash: string,
+  options: { retries?: number; retryIntervalMs?: number },
+): Promise<SubmitOutcome> {
   try {
     const receipt = await provider.waitForTransaction(transactionHash, {
       retries: options.retries ?? WAIT_RETRIES,

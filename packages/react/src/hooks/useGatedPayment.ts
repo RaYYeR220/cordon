@@ -17,36 +17,52 @@
  * 6 STRK fee. Pass `force` to submit anyway — which is what you want when the refusal itself is
  * the thing you are demonstrating.
  *
- * **The subject signs a resolved note id, and only the wallet knows it.** `${openNoteIds[0]}` is
- * substituted by the wallet while it assembles the transaction, but the gate hashes the felt it
- * actually received, so the subject's signature has to cover the resolved value. This package
- * cannot invent it: supply `noteId` for the `direct`, `claim` and `refund` legs. Without it the
- * hook reports itself blocked rather than signing something that would come back as
- * `CORDON_BAD_SUBJECT_SIG`. The `fund` leg reserves no note and needs nothing.
+ * **Every authorisation names the note it may land in, and the wallet is asked for it.** The
+ * subject signs a binding to one resolved open note, which is what makes a leaked authorisation
+ * worthless — and authorisations do leak, because Starknet publishes reverted transactions with
+ * their full calldata and a revert does not burn the nonce. So a claim that fails for an ordinary
+ * reason would otherwise broadcast a live, redirectable authorisation to the whole chain.
+ *
+ * The note id is not knowable in advance, so the SDK's `prepare*` flow asks the wallet: prepare
+ * once to learn the id, sign bound to it, prepare again, and verify the id did not move. This hook
+ * drives that, which means the two failure modes get their own states rather than being flattened
+ * into "something went wrong":
+ *
+ * - `prepare-failed` — the wallet cannot resolve calldata at prepare time, so a bound
+ *   authorisation is impossible with it. A dead end, and the honest answer is a different wallet.
+ * - `note-drift` — another transaction landed on the same channel between the two prepares, so the
+ *   note moved. **This is the system working.** It failed closed instead of paying the wrong
+ *   party, and the fix is simply to try again.
+ *
+ * Neither ever falls back to an unbound authorisation. The SDK has exactly one way to sign one,
+ * `acceptAnyNoteAndAllowRedirection`, and no option, prop or default in this package reaches it.
+ * A failed prepare is a condition to report, not a reason to weaken what the subject signs.
  */
 
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
-  authorizeClaim,
-  authorizeDirect,
-  authorizeFund,
-  authorizeRefund,
-  buildClaimActions,
-  buildDirectActions,
-  buildFundActions,
-  buildRefundActions,
+  NoteDriftError,
+  NotePreparationError,
   decodeRefusal,
   decodeRefusalFromError,
+  describeBinding,
+  prepareClaim,
+  prepareDirect,
+  prepareFund,
+  prepareRefund,
   preflight as runPreflight,
   toBigInt,
   toFelt,
   type Credential,
   type Felt,
   type FeltLike,
+  type GateAuthorization,
   type Preflight,
+  type PreparedGateTransaction,
   type Refusal,
   type Settlement,
   type Strk20Action,
+  type Strk20Prepare,
 } from "@cordon/sdk";
 
 import { useCordonContext } from "../context/CordonProvider.js";
@@ -58,7 +74,8 @@ import {
   readPolicy,
   readRevoked,
   readSettlement,
-  submitActions,
+  submitPreparedCall,
+  supportsPreparedInvoke,
   voyagerTxUrl,
   type Strk20NormalizedError,
   type Strk20SubmitResult,
@@ -76,9 +93,14 @@ export type PaymentLeg = "direct" | "fund" | "claim" | "refund";
  */
 export type PaymentStatus =
   | "idle"
-  /** Reading chain state, running the pre-flight, signing the authorisation locally. */
+  /** Reading chain state and running the pre-flight. Nothing signed yet. */
   | "building"
-  /** Handed to the wallet, which is proving and asking the user to approve. */
+  /**
+   * The prepare-twice flow. The wallet is resolving the note id and proving the transaction, which
+   * is the slowest part of a STRK20 payment and can take minutes.
+   */
+  | "preparing"
+  /** Handed to the wallet to submit, which is asking the user to approve. */
   | "awaiting-signature"
   /** The wallet returned a hash. On chain, not yet final. */
   | "submitted"
@@ -86,6 +108,19 @@ export type PaymentStatus =
   | "confirmed"
   /** A rule refused it. The transaction reverted and nothing moved. */
   | "refused"
+  /**
+   * The open note moved between the two prepares, so the signed binding no longer matches.
+   *
+   * Not a failure — the system failing *closed*. Submitting anyway would have reverted with
+   * `CORDON_NOTE_MISMATCH`, or, without a binding, paid the wrong party. Call `pay()` again to
+   * sign for the new note.
+   */
+  | "note-drift"
+  /**
+   * The wallet cannot resolve calldata at prepare time, so a bound authorisation is impossible.
+   * A dead end rather than a retry: the answer is a wallet that implements `strk20PrepareInvoke`.
+   */
+  | "prepare-failed"
   /** Something outside the gate went wrong. */
   | "failed"
   /** Stopped waiting for the receipt. It may still land. */
@@ -102,7 +137,7 @@ export interface PaymentBlocker {
     | "NO_AMOUNT"
     | "NO_PAYEE"
     | "NO_RECIPIENT"
-    | "NO_NOTE_ID"
+    | "NO_PREPARE_SUPPORT"
     | "NO_SETTLEMENT_ID"
     | "NO_EXPIRY"
     | "NO_GATE_CONTEXT"
@@ -126,13 +161,12 @@ export interface UseGatedPaymentOptions {
   /** The secret behind `credential.subjectPublicKey`. Signs the authorisation, locally. */
   subjectPrivateKey?: FeltLike | null;
   /**
-   * The **resolved** open-note id the subject signs over. A literal, or a function that resolves
-   * one at build time. Not needed on the `fund` leg.
+   * Optional deadline on the authorisation, in unix seconds.
    *
-   * A resolver may return `null` to say it could not find one; the payment then fails with that
-   * said plainly rather than signing a value it made up.
+   * A bound authorisation does not need one — it can only ever fill the note it names — so this is
+   * belt and braces for a caller who wants the signature to lapse as well.
    */
-  noteId?: FeltLike | (() => FeltLike | null | Promise<FeltLike | null>) | null;
+  validUntil?: number;
   /**
    * Names the escrow. Required for `claim` and `refund`.
    *
@@ -187,33 +221,27 @@ export interface UseGatedPayment {
   result: Strk20SubmitResult | null;
   /** The action array as it went to the wallet, placeholders intact. For display and debugging. */
   actions: Strk20Action[] | null;
+  /** The signed authorisation, once there is one. Carries the binding, the amount and the hashes. */
+  authorization: GateAuthorization | null;
+  /**
+   * What the authorisation committed to about its destination, in one sentence.
+   *
+   * Straight from the SDK's `describeBinding`, so a confirmation screen says the same thing the
+   * signed message does — including, for an unbound authorisation, that it can be redirected.
+   */
+  bindingDescription: string | null;
+  /** The open note this payment is bound to. Zero on a `fund`, which fills none. */
+  noteId: Felt | null;
+  /**
+   * Set when the note moved between prepares. Carries both ids so a UI can explain the retry
+   * rather than showing a dead end.
+   */
+  drift: { signedNoteId: Felt; preparedNoteId: Felt } | null;
   /** Everything missing before this can be attempted. Empty means ready. */
   blockers: PaymentBlocker[];
   ready: boolean;
   pay: (options?: PayOptions) => Promise<void>;
   reset: () => void;
-}
-
-/**
- * Resolve the note id, whether it was given as a literal or as a function.
- *
- * A resolver that comes back empty-handed is a hard stop, not something to paper over: signing a
- * placeholder or a zero would buy a transaction that reverts with `CORDON_BAD_SUBJECT_SIG` after
- * the pool has already charged its fee.
- */
-async function resolveNoteId(
-  value: UseGatedPaymentOptions["noteId"],
-): Promise<Felt> {
-  const resolved = typeof value === "function" ? await value() : value;
-  if (resolved === null || resolved === undefined) {
-    throw new Error(
-      "No open-note id was resolved, so there is nothing for the subject to sign over. The " +
-        "wallet substitutes ${openNoteIds[0]} while it assembles the transaction, but the gate " +
-        "hashes the felt it received — supply the resolved id, or use the fund leg, which " +
-        "reserves no note.",
-    );
-  }
-  return toFelt(resolved);
 }
 
 export function useGatedPayment(options: UseGatedPaymentOptions = {}): UseGatedPayment {
@@ -230,6 +258,9 @@ export function useGatedPayment(options: UseGatedPaymentOptions = {}): UseGatedP
   const [transactionHash, setTransactionHash] = useState<string | null>(null);
   const [result, setResult] = useState<Strk20SubmitResult | null>(null);
   const [actions, setActions] = useState<Strk20Action[] | null>(null);
+  const [authorization, setAuthorization] = useState<GateAuthorization | null>(null);
+  const [noteId, setNoteId] = useState<Felt | null>(null);
+  const [drift, setDrift] = useState<{ signedNoteId: Felt; preparedNoteId: Felt } | null>(null);
 
   // The options object is rebuilt on every render by most callers, so `pay` reads the latest
   // through a ref instead of being re-created — otherwise a click handler captured one render ago
@@ -299,12 +330,14 @@ export function useGatedPayment(options: UseGatedPaymentOptions = {}): UseGatedP
         add("NO_EXPIRY", "Set when the claim window closes and the refund window opens.");
       }
     }
-    if (leg !== "fund" && (options.noteId === null || options.noteId === undefined)) {
+    // Every leg is prepared before it is submitted, including a fund, which is prepared once.
+    if (connection && !supportsPreparedInvoke(connection.account)) {
       add(
-        "NO_NOTE_ID",
-        "The subject signs the resolved open-note id, which only the wallet knows while it " +
-          "assembles the transaction. Supply `noteId`; signing the placeholder instead would " +
-          "come back from the gate as CORDON_BAD_SUBJECT_SIG.",
+        "NO_PREPARE_SUPPORT",
+        "This wallet does not implement strk20PrepareInvoke, so the note a payment is allowed to " +
+          "land in cannot be known before signing. Cordon will not sign an authorisation that " +
+          "any note can satisfy, because a reverted transaction publishes its calldata and " +
+          "anyone could redirect it. Use a wallet that supports prepared invokes.",
       );
     }
     return found;
@@ -319,6 +352,9 @@ export function useGatedPayment(options: UseGatedPaymentOptions = {}): UseGatedP
     setTransactionHash(null);
     setResult(null);
     setActions(null);
+    setAuthorization(null);
+    setNoteId(null);
+    setDrift(null);
   }, []);
 
   const fail = useCallback((normalized: Strk20NormalizedError): void => {
@@ -421,87 +457,114 @@ export function useGatedPayment(options: UseGatedPaymentOptions = {}): UseGatedP
           }
         }
 
-        // Sign, then build from the signed result. The SDK's builders read the amount and the
-        // terms back off the authorisation, so what was signed and what is sent are the same
-        // values by construction — there is nowhere for a second, different number to come from.
+        // Sign and prepare. The SDK runs both prepares: probe the wallet for the note id this
+        // transaction will fill, sign an authorisation bound to exactly that note, prepare again,
+        // and verify the id did not move. What comes back is a resolved call and its proof.
         //
         // The key is the subject's own STARK-curve key, never the wallet's: the pseudonym is what
         // velocity and replay protection are keyed by, and binding it to an address would undo the
         // privacy the pool provides.
-        let built: Strk20Action[];
-        if (currentLeg === "direct") {
-          built = buildDirectActions({
-            authorization: authorizeDirect(
-              {
-                context,
-                token: currentToken,
-                policyId,
-                credential: current.credential as Credential,
-                amount,
-                noteId: await resolveNoteId(current.noteId),
-                ...(nonce !== undefined ? { nonce } : {}),
-              },
-              subjectKey,
+        //
+        // The builders read the amount and the terms back off the authorisation, so what was
+        // signed and what is sent are the same values by construction. There is nowhere for a
+        // second, different number to come from.
+        if (!supportsPreparedInvoke(connection.account)) {
+          setStatus("prepare-failed");
+          setError(
+            localError(
+              "This wallet does not implement strk20PrepareInvoke, so the note this payment may " +
+                "land in cannot be known before signing. Cordon does not sign an authorisation " +
+                "that any note can satisfy.",
             ),
-            payee: current.payee as string,
-          });
-        } else if (currentLeg === "fund") {
-          built = buildFundActions({
-            authorization: authorizeFund(
-              {
-                context,
-                token: currentToken,
-                policyId,
-                credential: current.credential as Credential,
-                amount,
-                payeeSubjectKey: current.payeeSubjectKey as FeltLike,
-                payeeClaimPolicyId: current.payeeClaimPolicyId as FeltLike,
-                expiresAt: current.expiresAt as FeltLike,
-                ...(current.settlementId ? { settlementId: current.settlementId } : {}),
-                ...(nonce !== undefined ? { nonce } : {}),
-              },
-              subjectKey,
-            ),
-          });
-        } else if (currentLeg === "claim") {
-          built = buildClaimActions({
-            authorization: authorizeClaim(
-              {
-                context,
-                settlement: settlement as Settlement,
-                settlementId: current.settlementId as FeltLike,
-                credential: current.credential as Credential,
-                noteId: await resolveNoteId(current.noteId),
-                ...(nonce !== undefined ? { nonce } : {}),
-              },
-              subjectKey,
-            ),
-            recipient: current.recipient as string,
-          });
-        } else {
-          built = buildRefundActions({
-            authorization: authorizeRefund(
-              {
-                context,
-                settlement: settlement as Settlement,
-                settlementId: current.settlementId as FeltLike,
-                noteId: await resolveNoteId(current.noteId),
-                ...(nonce !== undefined ? { nonce } : {}),
-              },
-              subjectKey,
-            ),
-            recipient: current.recipient as string,
-          });
+          );
+          return;
         }
-        setActions(built);
+        const account = connection.account;
+        const prepare: Strk20Prepare = (toPrepare) =>
+          account.strk20PrepareInvoke(toPrepare) as ReturnType<Strk20Prepare>;
+        const validUntil = current.validUntil;
+
+        setStatus("preparing");
+        let prepared: PreparedGateTransaction<GateAuthorization>;
+        if (currentLeg === "direct") {
+          prepared = await prepareDirect(
+            {
+              prepare,
+              context,
+              token: currentToken,
+              policyId,
+              credential: current.credential as Credential,
+              amount,
+              payee: current.payee as string,
+              ...(nonce !== undefined ? { nonce } : {}),
+              ...(validUntil !== undefined ? { validUntil } : {}),
+            },
+            subjectKey,
+          );
+        } else if (currentLeg === "fund") {
+          prepared = await prepareFund(
+            {
+              prepare,
+              context,
+              token: currentToken,
+              policyId,
+              credential: current.credential as Credential,
+              amount,
+              payeeSubjectKey: current.payeeSubjectKey as FeltLike,
+              payeeClaimPolicyId: current.payeeClaimPolicyId as FeltLike,
+              expiresAt: current.expiresAt as FeltLike,
+              ...(current.settlementId ? { settlementId: current.settlementId } : {}),
+              ...(nonce !== undefined ? { nonce } : {}),
+              ...(validUntil !== undefined ? { validUntil } : {}),
+            },
+            subjectKey,
+          );
+        } else if (currentLeg === "claim") {
+          prepared = await prepareClaim(
+            {
+              prepare,
+              context,
+              settlement: settlement as Settlement,
+              settlementId: current.settlementId as FeltLike,
+              credential: current.credential as Credential,
+              recipient: current.recipient as string,
+              ...(nonce !== undefined ? { nonce } : {}),
+              ...(validUntil !== undefined ? { validUntil } : {}),
+            },
+            subjectKey,
+          );
+        } else {
+          prepared = await prepareRefund(
+            {
+              prepare,
+              context,
+              settlement: settlement as Settlement,
+              settlementId: current.settlementId as FeltLike,
+              recipient: current.recipient as string,
+              ...(nonce !== undefined ? { nonce } : {}),
+              ...(validUntil !== undefined ? { validUntil } : {}),
+            },
+            subjectKey,
+          );
+        }
+
+        setActions(prepared.actions);
+        setAuthorization(prepared.authorization);
+        setNoteId(prepared.noteId);
 
         setStatus("awaiting-signature");
-        const outcome = await submitActions(connection.account, provider, built, {
-          onSubmitted: (hash) => {
-            setTransactionHash(hash);
-            setStatus("submitted");
+        const outcome = await submitPreparedCall(
+          account,
+          provider,
+          { call: prepared.call, proof: prepared.proof },
+          {
+            onSubmitted: (hash) => {
+              setTransactionHash(hash);
+              setStatus("submitted");
+            },
           },
-        });
+        );
+
 
         if (!outcome.ok) {
           // A wallet or node error can still carry a Cordon panic code — a node that simulates
@@ -532,7 +595,26 @@ export function useGatedPayment(options: UseGatedPaymentOptions = {}): UseGatedP
         setStatus("confirmed");
         current.onConfirmed?.(outcome.result);
       } catch (caught) {
-        // Anything thrown while assembling — a malformed felt, a resolver that rejected — is
+        // The two prepare failures are conditions with their own answers, so they get their own
+        // states rather than being flattened into "something went wrong".
+        if (caught instanceof NoteDriftError) {
+          // The note moved between prepares. This is the system failing closed: submitting would
+          // have reverted with CORDON_NOTE_MISMATCH, or, unbound, paid the wrong party. Calling
+          // pay() again signs for the new note.
+          setDrift({ signedNoteId: caught.signedNoteId, preparedNoteId: caught.preparedNoteId });
+          setError(localError(caught.message));
+          setStatus("note-drift");
+          return;
+        }
+        if (caught instanceof NotePreparationError) {
+          // The wallet could not tell us which note this will fill. There is no safe way on from
+          // here — signing an unbound authorisation is the one thing this package will not do.
+          setError(localError(caught.message));
+          setStatus("prepare-failed");
+          return;
+        }
+
+        // Anything else thrown while assembling — a malformed felt, a rejected prompt — is
         // reported as a failure with its own message. It is never swallowed into a false refusal.
         const decoded = decodeRefusalFromError(caught);
         if (decoded.code !== "UNKNOWN") {
@@ -555,7 +637,11 @@ export function useGatedPayment(options: UseGatedPaymentOptions = {}): UseGatedP
 
   return {
     status,
-    busy: status === "building" || status === "awaiting-signature" || status === "submitted",
+    busy:
+      status === "building" ||
+      status === "preparing" ||
+      status === "awaiting-signature" ||
+      status === "submitted",
     refusal,
     predicted,
     preflight: preflightResult,
@@ -564,6 +650,10 @@ export function useGatedPayment(options: UseGatedPaymentOptions = {}): UseGatedP
     voyagerUrl: transactionHash ? voyagerTxUrl(transactionHash, config.chainId) : null,
     result,
     actions,
+    authorization,
+    bindingDescription: authorization ? describeBinding(authorization.binding) : null,
+    noteId,
+    drift,
     blockers,
     ready: blockers.length === 0,
     pay,

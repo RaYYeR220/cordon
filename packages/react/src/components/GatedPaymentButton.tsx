@@ -40,7 +40,8 @@ export interface GatedPaymentButtonProps extends UseGatedPaymentOptions {
 }
 
 const STEPS = [
-  { key: "building", label: "Build" },
+  { key: "building", label: "Check" },
+  { key: "preparing", label: "Prepare" },
   { key: "awaiting-signature", label: "Sign" },
   { key: "submitted", label: "Submit" },
   { key: "confirmed", label: "Confirm" },
@@ -49,22 +50,33 @@ const STEPS = [
 const ORDER: Record<string, number> = {
   idle: -1,
   building: 0,
-  "awaiting-signature": 1,
-  submitted: 2,
-  confirmed: 3,
-  unconfirmed: 2,
-  refused: 3,
-  failed: 3,
+  preparing: 1,
+  "awaiting-signature": 2,
+  submitted: 3,
+  confirmed: 4,
+  unconfirmed: 3,
+  refused: 4,
+  failed: 4,
+  "note-drift": 1,
+  "prepare-failed": 1,
 };
 
 const MESSAGE: Record<string, string> = {
   idle: "",
-  building: "Reading the policy, checking the credential and signing the authorisation.",
-  "awaiting-signature":
-    "Waiting for the wallet. It is generating a STARK proof before it can submit, which takes a while.",
+  building: "Reading the policy and checking the credential against the registries.",
+  preparing:
+    "Asking the wallet which note this will land in, signing for exactly that note, and " +
+    "generating the STARK proof. This is the slow part.",
+  "awaiting-signature": "Waiting for the wallet to approve and submit.",
   submitted: "On chain. Waiting for the proof to be verified and the receipt to settle.",
   confirmed: "Settled. The value moved and the policy check is a public fact.",
   refused: "Refused. The transaction reverted whole and the value stayed shielded.",
+  "note-drift":
+    "Another transaction landed on this channel while the payment was being prepared, so the " +
+    "note it was signed for is no longer the note it would fill. Nothing was submitted. This is " +
+    "the check working — try again to sign for the new note.",
+  "prepare-failed":
+    "This payment cannot be signed safely with this wallet, so nothing was submitted.",
   failed: "Could not be completed.",
   unconfirmed:
     "Stopped waiting for the receipt. The transaction may still land — check the explorer link.",
@@ -87,14 +99,20 @@ export function GatedPaymentButton({
   const disabled = blocked || payment.busy;
   const position = ORDER[payment.status] ?? -1;
 
+  // A drift is a retry, not a dead end, so the button says so rather than repeating "Pay" as if
+  // nothing had happened.
   const label =
     payment.status === "building"
-      ? "Building"
-      : payment.status === "awaiting-signature"
-        ? "Waiting for the wallet"
-        : payment.status === "submitted"
-          ? "Submitted"
-          : children;
+      ? "Checking"
+      : payment.status === "preparing"
+        ? "Preparing"
+        : payment.status === "awaiting-signature"
+          ? "Waiting for the wallet"
+          : payment.status === "submitted"
+            ? "Submitted"
+            : payment.status === "note-drift"
+              ? "Try again"
+              : children;
 
   return (
     <div className={cx("cordon", "cordon-payment", className)}>
@@ -118,6 +136,8 @@ export function GatedPaymentButton({
               data-state={
                 payment.status === "refused" && index === STEPS.length - 1
                   ? "refused"
+                  : payment.status === "note-drift" && step.key === "preparing"
+                    ? "refused"
                   : index < position
                     ? "done"
                     : index === position
@@ -169,7 +189,24 @@ export function GatedPaymentButton({
         </p>
       ) : null}
 
-      {payment.status === "failed" && payment.error ? (
+      {/*
+        What the signature committed to about its destination, in the SDK's own words. On a bound
+        authorisation this is reassurance; on an unbound one it is a warning, and the wording comes
+        from `describeBinding` so the screen says exactly what the signed message does.
+      */}
+      {payment.bindingDescription ? (
+        <p className="cordon-note">{payment.bindingDescription}</p>
+      ) : null}
+
+      {payment.status === "note-drift" && payment.drift ? (
+        <p className="cordon-note" role="alert">
+          Signed for note <span className="cordon-mono">{shortHex(payment.drift.signedNoteId)}</span>
+          ; the transaction would now fill{" "}
+          <span className="cordon-mono">{shortHex(payment.drift.preparedNoteId)}</span>.
+        </p>
+      ) : null}
+
+      {(payment.status === "failed" || payment.status === "prepare-failed") && payment.error ? (
         <p className="cordon-note" role="alert">
           {payment.error.message}
         </p>

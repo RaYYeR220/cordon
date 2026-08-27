@@ -43,8 +43,19 @@ import {
   type ChainState,
 } from "./fixtures.js";
 
+/**
+ * A wallet that behaves like Ready: it resolves `${openNoteIds[0]}` at prepare time and returns
+ * the substituted calldata, which is the whole reason a bound authorisation is possible.
+ *
+ * `noteIds` is a queue. Pushing two different ids models another transaction landing on the same
+ * channel between the two prepares, which is what `NoteDriftError` exists for.
+ */
 const mocks = vi.hoisted(() => ({
-  invoke: vi.fn(),
+  execute: vi.fn(),
+  prepare: vi.fn(),
+  noteIds: [] as string[],
+  /** Overrides the wallet account, for modelling a wallet missing the prepare methods. */
+  account: undefined as Record<string, unknown> | undefined,
 }));
 
 vi.mock("../src/strk20/wallet.js", async (importOriginal) => {
@@ -66,9 +77,10 @@ vi.mock("../src/strk20/wallet.js", async (importOriginal) => {
       ok: true,
       connection: {
         wallet: fakeWallet,
-        account: {
+        account: mocks.account ?? {
           strk20Balances: async () => [],
-          strk20InvokeTransaction: mocks.invoke,
+          strk20PrepareInvoke: mocks.prepare,
+          executeWithProof: mocks.execute,
         },
         name: "Ready",
         icon: "",
@@ -84,12 +96,32 @@ vi.mock("../src/strk20/wallet.js", async (importOriginal) => {
 });
 
 const NOTE_ID = "0x6e6f74655f30";
+const OTHER_NOTE_ID = "0x6e6f74655f31";
+
+/**
+ * Stand in for the wallet's `strk20PrepareInvoke`: substitute the note-id placeholder in the gate
+ * invoke's calldata, exactly where the real wallet does — the last felt.
+ */
+function preparedFrom(actions: Array<Record<string, unknown>>, noteId: string) {
+  const invoke = actions.find((action) => action["type"] === "invoke");
+  const calldata = [...((invoke?.["calldata"] as string[]) ?? [])];
+  if (calldata.length > 0) calldata[calldata.length - 1] = noteId;
+  return {
+    call: { contractAddress: GATE, entrypoint: "privacy_invoke", calldata },
+    proof: { data: ["0xproof"] },
+  };
+}
 
 function Harness({
   chain,
+  account,
   ...options
-}: { chain: ChainState } & UseGatedPaymentOptions & { force?: boolean }): ReactNode {
+}: {
+  chain: ChainState;
+  account?: Record<string, unknown>;
+} & UseGatedPaymentOptions & { force?: boolean }): ReactNode {
   const rpc = makeRpc(chain);
+  mocks.account = account;
   return (
     <CordonProvider
       provider={rpc}
@@ -110,7 +142,6 @@ function Harness({
         policyId="ACCREDITED"
         credential={makeCredential()}
         subjectPrivateKey={subjectKey.privateKey}
-        noteId={NOTE_ID}
         {...options}
       />
     </CordonProvider>
@@ -126,8 +157,15 @@ async function connectAndPay(): Promise<void> {
 }
 
 beforeEach(() => {
-  mocks.invoke.mockReset();
-  mocks.invoke.mockResolvedValue({ transaction_hash: "0x0feed1" });
+  mocks.prepare.mockReset();
+  mocks.execute.mockReset();
+  mocks.noteIds = [];
+  mocks.account = undefined;
+  // By default the note is stable across both prepares, which is the ordinary case.
+  mocks.prepare.mockImplementation(async (actions: Array<Record<string, unknown>>) =>
+    preparedFrom(actions, mocks.noteIds.shift() ?? NOTE_ID),
+  );
+  mocks.execute.mockResolvedValue({ transaction_hash: "0x0feed1" });
 });
 
 describe("a payment the pre-flight can already tell will be refused", () => {
@@ -139,7 +177,7 @@ describe("a payment the pre-flight can already tell will be refused", () => {
     expect(screen.getByText(/no fee was charged/)).toBeInTheDocument();
     // The whole point: the wallet was never asked to prove and submit a transaction that could
     // only revert.
-    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(mocks.execute).not.toHaveBeenCalled();
   });
 
   it("submits anyway when the revert is the point", async () => {
@@ -153,7 +191,7 @@ describe("a payment the pre-flight can already tell will be refused", () => {
     render(<Harness chain={chain} amount={500n * ONE_STRK} force />);
     await connectAndPay();
 
-    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.execute).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.getByText("CORDON_OVER_CAP")).toBeInTheDocument());
     // Now it is an on-chain fact, not a prediction, and it has a link to prove it.
     expect(screen.getAllByText(/The transaction reverted whole/).length).toBeGreaterThan(0);
@@ -169,8 +207,8 @@ describe("a payment the pre-flight can already tell will be refused", () => {
     render(<Harness chain={chain} amount={10n * ONE_STRK} />);
     await connectAndPay();
 
-    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(1));
-    const actions = mocks.invoke.mock.calls[0]?.[0] as Array<Record<string, unknown>>;
+    await waitFor(() => expect(mocks.execute).toHaveBeenCalledTimes(1));
+    const actions = mocks.prepare.mock.calls.at(-1)?.[0] as Array<Record<string, unknown>>;
     expect(actions.map((action) => action["type"])).toEqual(["withdraw", "transfer", "invoke"]);
     // The wallet substitutes these literals; hex-encoding either one breaks the substitution.
     expect(actions[1]?.["amount"]).toBe("OPEN");
@@ -219,7 +257,7 @@ describe("a refusal that only the chain could know about", () => {
 
 describe("everything that is not a refusal", () => {
   it("reports a declined wallet prompt as failed, not refused", async () => {
-    mocks.invoke.mockRejectedValue(
+    mocks.execute.mockRejectedValue(
       Object.assign(new Error("User refused the operation"), { code: 113 }),
     );
     render(<Harness chain={defaultChainState()} amount={10n * ONE_STRK} />);
@@ -262,7 +300,7 @@ describe("the context every signature is bound to", () => {
       expect(screen.getByText(/CORDON_BAD_POOL/)).toBeInTheDocument(),
     );
     expect(screen.getByRole("button", { name: "Pay" })).toBeDisabled();
-    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(mocks.execute).not.toHaveBeenCalled();
   });
 
   it("blocks when the gate will not say which pool it serves", async () => {
@@ -281,16 +319,79 @@ describe("the context every signature is bound to", () => {
   });
 });
 
-describe("the note id the subject has to sign over", () => {
-  it("blocks the payment rather than signing a placeholder that would be refused", async () => {
-    render(<Harness chain={defaultChainState()} amount={10n * ONE_STRK} noteId={null} />);
+describe("the note the authorisation is bound to", () => {
+  it("signs for the note the wallet says the transaction will fill", async () => {
+    render(<Harness chain={defaultChainState()} amount={10n * ONE_STRK} />);
+    await connectAndPay();
+
+    await waitFor(() => expect(mocks.execute).toHaveBeenCalledTimes(1));
+    // Two prepares: one to learn the note id, one with the real signature bound to it.
+    expect(mocks.prepare).toHaveBeenCalledTimes(2);
+
+    const submitted = mocks.execute.mock.calls[0]?.[0] as { calldata: string[] };
+    expect(submitted.calldata.at(-1)).toBe(NOTE_ID);
+    expect(screen.getByText(new RegExp(`Only note ${NOTE_ID}`))).toBeInTheDocument();
+  });
+
+  it("fails closed when the note moves between the two prepares", async () => {
+    // Another transaction lands on the same channel in between, so the index advances.
+    mocks.noteIds = [NOTE_ID, OTHER_NOTE_ID];
+    render(<Harness chain={defaultChainState()} amount={10n * ONE_STRK} />);
+    await connectAndPay();
+
+    await waitFor(() => expect(screen.getByText(/Nothing was submitted/)).toBeInTheDocument());
+    expect(mocks.execute).not.toHaveBeenCalled();
+    // A drift is the check working, so it offers a retry rather than a dead end.
+    expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled();
+    expect(screen.getByText(/This is the check working/)).toBeInTheDocument();
+  });
+
+  it("retries cleanly after a drift, signing for the note that settled", async () => {
+    mocks.noteIds = [NOTE_ID, OTHER_NOTE_ID];
+    render(<Harness chain={defaultChainState()} amount={10n * ONE_STRK} />);
+    await connectAndPay();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled());
+
+    // The channel has settled on the new note, so the retry sees it from both prepares.
+    mocks.prepare.mockImplementation(async (actions: Array<Record<string, unknown>>) =>
+      preparedFrom(actions, OTHER_NOTE_ID),
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+
+    await waitFor(() => expect(mocks.execute).toHaveBeenCalledTimes(1));
+    const submitted = mocks.execute.mock.calls[0]?.[0] as { calldata: string[] };
+    expect(submitted.calldata.at(-1)).toBe(OTHER_NOTE_ID);
+  });
+
+  it("blocks a wallet with no strk20PrepareInvoke before anything is attempted", async () => {
+    // Braavos-shaped: it speaks the wallet API but not the prepare half.
+    const account = { strk20Balances: async () => [] };
+    render(<Harness chain={defaultChainState()} amount={10n * ONE_STRK} account={account} />);
+
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Ready" }));
     await waitFor(() => expect(screen.getByText("STRK20 ready")).toBeInTheDocument());
 
     expect(screen.getByRole("button", { name: "Pay" })).toBeDisabled();
-    expect(screen.getByText(/CORDON_BAD_SUBJECT_SIG/)).toBeInTheDocument();
-    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(screen.getByText(/does not implement strk20PrepareInvoke/)).toBeInTheDocument();
+    expect(screen.getByText(/anyone could redirect it/)).toBeInTheDocument();
+  });
+
+  it("reports a wallet that cannot resolve the placeholder, and signs nothing", async () => {
+    // A wallet that hands the placeholder straight back cannot support a bound authorisation.
+    mocks.prepare.mockImplementation(async (actions: Array<Record<string, unknown>>) =>
+      preparedFrom(actions, "${openNoteIds[0]}"),
+    );
+    render(<Harness chain={defaultChainState()} amount={10n * ONE_STRK} />);
+    await connectAndPay();
+
+    await waitFor(() =>
+      expect(screen.getByText(/does not resolve calldata at prepare time/)).toBeInTheDocument(),
+    );
+    expect(mocks.execute).not.toHaveBeenCalled();
+    // Never a quiet downgrade to an authorisation any note could satisfy.
+    expect(screen.queryByText(/can be redirected/)).not.toBeInTheDocument();
   });
 
   it("needs none on the fund leg, which reserves no note", async () => {
@@ -299,7 +400,6 @@ describe("the note id the subject has to sign over", () => {
         chain={defaultChainState()}
         leg="fund"
         amount={10n * ONE_STRK}
-        noteId={null}
         payeeSubjectKey={payeeKey.publicKey}
         payeeClaimPolicyId="ACCREDITED"
         expiresAt={Math.floor(Date.now() / 1000) + 3600}
@@ -307,8 +407,8 @@ describe("the note id the subject has to sign over", () => {
     );
     await connectAndPay();
 
-    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(1));
-    const actions = mocks.invoke.mock.calls[0]?.[0] as Array<Record<string, unknown>>;
+    await waitFor(() => expect(mocks.execute).toHaveBeenCalledTimes(1));
+    const actions = mocks.prepare.mock.calls.at(-1)?.[0] as Array<Record<string, unknown>>;
     // withdraw -> invoke, with no open note: nothing comes back in this transaction.
     expect(actions.map((action) => action["type"])).toEqual(["withdraw", "invoke"]);
   });
@@ -319,7 +419,6 @@ describe("the note id the subject has to sign over", () => {
         chain={defaultChainState()}
         leg="fund"
         amount={10n * ONE_STRK}
-        noteId={null}
         payeeSubjectKey={payeeKey.publicKey}
         payeeClaimPolicyId="ACCREDITED"
         expiresAt={Math.floor(Date.now() / 1000) + 3600}
@@ -327,8 +426,8 @@ describe("the note id the subject has to sign over", () => {
     );
     await connectAndPay();
 
-    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(1));
-    const actions = mocks.invoke.mock.calls[0]?.[0] as Array<Record<string, unknown>>;
+    await waitFor(() => expect(mocks.execute).toHaveBeenCalledTimes(1));
+    const actions = mocks.prepare.mock.calls.at(-1)?.[0] as Array<Record<string, unknown>>;
     const calldata = actions[1]?.["calldata"] as string[];
     // Somewhere in the Fund calldata is an id with real entropy. An id is single-use forever and
     // is the only handle in the event log, so a memorable one can be burned ahead of you by a
@@ -345,7 +444,6 @@ describe("the note id the subject has to sign over", () => {
         chain={defaultChainState()}
         leg="fund"
         amount={10n * ONE_STRK}
-        noteId={null}
         settlementId="0x2024"
         payeeSubjectKey={payeeKey.publicKey}
         payeeClaimPolicyId="ACCREDITED"
@@ -356,7 +454,7 @@ describe("the note id the subject has to sign over", () => {
 
     // The SDK rejects it, and the hook reports the refusal instead of submitting.
     await waitFor(() => expect(screen.getByText(/entropy|guessable|random/i)).toBeInTheDocument());
-    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(mocks.execute).not.toHaveBeenCalled();
   });
 
   it("blocks a fund that names no payee, which anyone could then claim", async () => {
@@ -365,7 +463,6 @@ describe("the note id the subject has to sign over", () => {
         chain={defaultChainState()}
         leg="fund"
         amount={10n * ONE_STRK}
-        noteId={null}
         payeeClaimPolicyId="ACCREDITED"
         expiresAt={Math.floor(Date.now() / 1000) + 3600}
       />,
@@ -378,3 +475,47 @@ describe("the note id the subject has to sign over", () => {
     expect(screen.getByText(/Name the payee's pseudonym/)).toBeInTheDocument();
   });
 });
+
+/**
+ * The one thing this package must never do.
+ *
+ * `acceptAnyNoteAndAllowRedirection` signs an authorisation that any note can satisfy, which a
+ * stranger can lift out of a reverted transaction's calldata and redirect. It is a decision only a
+ * caller can make, deliberately, with that name in their own source. No hook, prop or default here
+ * may reach it — including as a fallback when a prepare fails, which is exactly when reaching for
+ * it would feel most reasonable.
+ */
+describe("unbound authorisations", () => {
+  it("are unreachable from anywhere in this package", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+
+    // Vitest runs from the package root, so this walks the whole published source tree.
+    const files = await collectSources(join(process.cwd(), "src"));
+    expect(files.length).toBeGreaterThan(20);
+
+    for (const file of files) {
+      // Comments are stripped first: several files explain at length *why* they never reach for
+      // unbound mode, and that prose is the documentation, not a violation of it.
+      const code = (await readFile(file, "utf8"))
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/^\s*\/\/.*$/gm, "");
+      expect(code, `${file} reaches for unbound mode`).not.toMatch(
+        /acceptAnyNoteAndAllowRedirection|NOTE_ANY/,
+      );
+    }
+  });
+});
+
+async function collectSources(dir: string): Promise<string[]> {
+  const { readdir } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const entries = await readdir(dir, { withFileTypes: true });
+  const found: string[] = [];
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) found.push(...(await collectSources(full)));
+    else if (/\.tsx?$/.test(entry.name)) found.push(full);
+  }
+  return found;
+}

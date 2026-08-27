@@ -1,14 +1,12 @@
 /**
  * The whole thing, in one file.
  *
- * Copy this, put your gate address and policy id at the top, and you have a gated private payment
- * with the enforcement visible and the refusal named. Nothing below is Cordon-specific plumbing —
- * it is all just the components.
+ * Copy this, put your three constants at the top, and you have a gated private payment with the
+ * enforcement visible and the refusal named. Nothing below is Cordon-specific plumbing — it is all
+ * just the components.
  *
- * The one piece you have to supply yourself is `resolveNoteId`. The subject's signature covers the
- * *resolved* open-note id, and only the wallet knows it while it assembles the transaction. Until
- * you wire it up this page stays honestly blocked rather than signing something the gate would
- * refuse with CORDON_BAD_SUBJECT_SIG.
+ * The note this payment is allowed to land in is resolved by asking the wallet, so there is
+ * nothing to wire up for it. A wallet that cannot answer is reported, never worked around.
  */
 
 import { useState } from "react";
@@ -34,19 +32,6 @@ const GATE = "0x0000000000000000000000000000000000000000000000000000000000000000
 const POLICY = "ACCREDITED";
 /** The pool user being paid. */
 const PAYEE = "0x0000000000000000000000000000000000000000000000000000000000000000";
-
-/**
- * The resolved `${openNoteIds[0]}` for this transaction.
- *
- * `null` leaves the payment button blocked with the reason spelled out — which is the correct
- * behaviour until you wire this up, not a bug. `noteId` also accepts a function returning a
- * promise, for an app that resolves the id per transaction:
- *
- * ```tsx
- * <GatedPaymentButton noteId={async () => myNoteIdFor(payment)} … />
- * ```
- */
-const NOTE_ID: string | null = null;
 
 // ---------------------------------------------------------------------- the page
 
@@ -108,7 +93,6 @@ function Pay() {
         payee={PAYEE}
         credential={passport.credential}
         subjectPrivateKey={passport.subject?.privateKey ?? null}
-        noteId={NOTE_ID}
       >
         Pay {input || "0"} STRK
       </GatedPaymentButton>

@@ -24,7 +24,7 @@ import "@cordon/react/styles.css";
 <CordonProvider config={{ gateAddress: GATE }}>
   <ConnectWallet />
   <GatedPaymentButton policyId="ACCREDITED" amount={10n ** 18n} payee={PAYEE}
-    credential={credential} subjectPrivateKey={subjectKey} noteId={noteId} />
+    credential={credential} subjectPrivateKey={subjectKey} />
 </CordonProvider>
 ```
 
@@ -51,13 +51,31 @@ renders as `unavailable`. Never a zero, never an optimistic success. `<SpendMete
 unreadable velocity counter shows a striped, valueless track rather than a full allowance, because
 "you have your whole limit left" is the most dangerous thing it could say wrongly.
 
-**The subject signs a resolved note id, and only the wallet knows it.** `${openNoteIds[0]}` is a
-literal the wallet substitutes while assembling the transaction, but the gate hashes the felt it
-actually received — so the subject's signature has to cover the resolved value. This package cannot
-invent it. Pass `noteId` for the `direct`, `claim` and `refund` legs; without it the hook reports
-itself blocked rather than signing something the gate would answer with
-`CORDON_BAD_SUBJECT_SIG`. The `fund` leg reserves no note and needs nothing. See
-[Gating your own flow](#gating-your-own-flow).
+**Every authorisation names the note it may land in, and the wallet is asked for it.** This is
+handled for you, but it shapes the states you will render, so it is worth a paragraph.
+
+A signed authorisation that did not name its destination would be worth stealing. Starknet
+publishes reverted transactions with their full calldata and a revert does not burn the nonce, so a
+claim that fails for an ordinary reason — the window closed, an over-velocity refusal, too little
+shielded balance for the pool's fee — would broadcast a live authorisation that anyone could
+resubmit into a note of their own. The credential, the signature and the payee key would all still
+check out.
+
+So the subject signs a binding to one resolved open note. Nobody can know that id in advance
+(`${openNoteIds[0]}` is substituted by the wallet), so the SDK asks: prepare once to learn it, sign
+bound to it, prepare again, verify it did not move. `useGatedPayment` drives that, which gives you
+two states worth handling well:
+
+- **`note-drift`** — another transaction landed on the same channel in between, so the note moved
+  and nothing was submitted. **This is the system working**: it failed closed rather than paying
+  the wrong party. Render it as a retry, not an error. `payment.drift` carries both ids, and
+  `<GatedPaymentButton>` relabels itself "Try again".
+- **`prepare-failed`** — the wallet cannot resolve calldata at prepare time, so a bound
+  authorisation is impossible with it. A dead end; the answer is a different wallet.
+
+Neither ever falls back to an unbound authorisation. The SDK has exactly one way to sign one —
+`acceptAnyNoteAndAllowRedirection`, and the name is the warning — and no option, prop or default in
+this package reaches it. A test walks the whole source tree to keep it that way.
 
 ## Hooks first, components second
 
@@ -69,7 +87,7 @@ in the logic depends on the markup.
 | `useCordonWallet()` | Connect a wallet **and** probe whether it implements the STRK20 methods at all. `status` is one of `no-wallet`, `disconnected`, `connecting`, `probing`, `ready`, `unsupported`, `error`; `canPay` is true only for `ready`. |
 | `useCordonCredential(options?)` | Load, store and validate a credential. `status` is `none`, `checking`, `valid`, `refused` or **`unknown`** — that last one when a registry read failed, so the credential's standing is genuinely not known. Also holds the subject pseudonym (`deriveSubject`, `generateSubject`). |
 | `useCordonPolicy(policyId, options?)` | Read a published rule set, plus a subject's velocity counter. `status` distinguishes `missing` (the registry said nothing is published) from `unavailable` (the node would not answer). |
-| `useGatedPayment(options?)` | Build → sign → submit one leg, with the whole machine exposed: `idle`, `building`, `awaiting-signature`, `submitted`, `confirmed`, `refused`, `failed`, `unconfirmed`. Runs a free pre-flight first and stops on a predicted refusal unless you `pay({ force: true })`. |
+| `useGatedPayment(options?)` | Check → prepare → sign → submit one leg, with the whole machine exposed: `idle`, `building`, `preparing`, `awaiting-signature`, `submitted`, `confirmed`, `refused`, `note-drift`, `prepare-failed`, `failed`, `unconfirmed`. Runs a free pre-flight first and stops on a predicted refusal unless you `pay({ force: true })`. |
 | `useGateFeed(options?)` | On-chain passes merged with this session's refusals, each row labelled with where it came from. |
 
 The UI-free chain layer underneath is published separately as `@cordon/react/strk20` — wallet
@@ -152,7 +170,8 @@ Takes every `useGatedPayment` option, plus:
 | `force` | `boolean` | `false` | Submit even when the pre-flight predicted a refusal. The pool charges its fee either way, so this is off by default — turn it on when the revert is the point. |
 | `showSteps` | `boolean` | `true` | The step list. Worth keeping: each STRK20 step can take minutes. |
 | `showRefusal` | `boolean` | `true` | |
-| `children` | `ReactNode` | `"Pay"` | Idle label. |
+| `children` | `ReactNode` | `"Pay"` | Idle label. Becomes "Try again" after a `note-drift`. |
+| `validUntil` | `number` | — | Optional deadline on the authorisation, in unix seconds. A bound authorisation cannot be redirected, so it does not need one. |
 
 ### `<RefusalNotice>`
 
@@ -290,7 +309,6 @@ function Pay() {
         payee={PAYEE}
         credential={passport.credential}
         subjectPrivateKey={passport.subject?.privateKey}
-        noteId={resolveNoteId}
         onRefused={(refusal) => console.warn(refusal.code, refusal.title)}
       >
         Pay 1 STRK
@@ -319,20 +337,23 @@ Three pieces you supply:
    nothing stored. `passport.generateSubject()` makes a fresh one instead — back it up, it is not
    recoverable. The private half is **not** persisted unless you pass
    `persistSubjectKey: true`.
-3. **`resolveNoteId`.** The resolved `${openNoteIds[0]}` the wallet will substitute; see the note
-   at the top. `useGatedPayment` accepts a literal or a function returning a promise. If you cannot
-   resolve one, use the `fund` leg — it reserves no note, and the payee then presents their own
-   credential on `claim`.
+3. **A wallet that implements `strk20PrepareInvoke`.** That is how the note binding is resolved,
+   and it is the one hard requirement beyond STRK20 support itself. A wallet without it is reported
+   as a `NO_PREPARE_SUPPORT` blocker; the payment button stays disabled and says why.
 
 Prefer to build your own UI? Everything above is `useGatedPayment`:
 
 ```tsx
-const payment = useGatedPayment({ policyId: POLICY, amount, payee: PAYEE, credential, subjectPrivateKey, noteId });
+const payment = useGatedPayment({ policyId: POLICY, amount, payee: PAYEE, credential, subjectPrivateKey });
 
-payment.status;      // idle | building | awaiting-signature | submitted | confirmed | refused | failed | unconfirmed
+payment.status;      // idle | building | preparing | awaiting-signature | submitted
+                     //   | confirmed | refused | note-drift | prepare-failed | failed | unconfirmed
 payment.blockers;    // [{ code: "NO_CREDENTIAL", message: "Load the credential this policy asks for." }, …]
 payment.preflight;   // what the gate would decide, and which checks could not be run
 payment.refusal;     // { code: "CORDON_OVER_CAP", title, explanation, remedy, step }
+payment.noteId;      // the note this payment is bound to
+payment.bindingDescription;  // "Only note 0x6e6f…" — what the signature committed to, in words
+payment.drift;       // { signedNoteId, preparedNoteId } after a note-drift; call pay() to retry
 payment.voyagerUrl;
 await payment.pay();
 ```
@@ -367,7 +388,6 @@ they take it. `refund` closes the loop once the window shuts.
   credential={payeeCredential}
   subjectPrivateKey={payeeKey}
   recipient={PAYEE}
-  noteId={noteId}
 />
 ```
 
@@ -383,6 +403,12 @@ invoice number is refused outright. Read the generated id back from `payment.act
   answers `wallet_strk20Balances` with "Not implemented". `useCordonWallet` probes with that
   read-only call and reports `unsupported` with the wallet's own words rather than failing at
   signing time.
+- **The wallet must also implement `strk20PrepareInvoke`.** It is how the note binding is resolved.
+  Without it there is no safe way to sign, and this package reports that rather than downgrading to
+  an authorisation a stranger could redirect.
+- **A gated payment is submitted by your account, not by the wallet's own flow.** The prepare route
+  returns a resolved call and a proof, and the wallet adds no fee action in that mode — so the
+  submitting account pays the transaction fee.
 - **The pool charges a flat fee per transaction** (6 STRK at time of writing), taken from an
   already-shielded balance, whatever the outcome. A refused transaction still costs it — which is
   why the pre-flight runs first and why `force` is opt-in.

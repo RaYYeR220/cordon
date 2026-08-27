@@ -157,7 +157,7 @@ describe("<RefusalNotice>", () => {
 describe("every refusal the SDK knows", () => {
   it("renders without this package knowing anything about it", () => {
     const codes = refusalCodes();
-    expect(codes.length).toBeGreaterThan(40);
+    expect(codes.length).toBeGreaterThan(50);
 
     for (const code of codes) {
       const refusal = refusalForCode(code);
@@ -188,6 +188,12 @@ describe("every refusal the SDK knows", () => {
       "CORDON_NOTE_ID_NOT_ZERO",
       "CORDON_LEDGER_BROKEN",
       "CORDON_NOTHING_TO_SWEEP",
+      // The :V4 note binding, which is what makes a leaked authorisation worthless.
+      "CORDON_NOTE_MISMATCH",
+      "CORDON_NOTE_IS_SENTINEL",
+      "CORDON_NEEDS_DEADLINE",
+      "CORDON_WINDOW_TOO_LONG",
+      "CORDON_AUTH_EXPIRED",
     ]) {
       expect(refusalForCode(code), `${code} is missing`).toBeDefined();
       expect(decodeRefusal(revertReason(code)).code).toBe(code);
