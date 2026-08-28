@@ -33,7 +33,12 @@ The pool and the three registry pointers are fixed at construction and have no s
 confirm the wiring yourself rather than trusting this table:
 
 ```bash
-sncast call --url https://api.cartridge.gg/x/starknet/mainnet   --contract-address 0x061c734fe518f4c1a0e46d3d2a35b4ff1ab0df17dec510cff401d25e67dfc6b2   --function privacy_pool        # then issuer_registry, revocation_registry, policy_registry
+GATE=0x061c734fe518f4c1a0e46d3d2a35b4ff1ab0df17dec510cff401d25e67dfc6b2
+RPC=https://api.cartridge.gg/x/starknet/mainnet
+
+for f in privacy_pool issuer_registry revocation_registry policy_registry; do
+  sncast call --url $RPC --contract-address $GATE --function $f
+done
 ```
 
 Reproduce the class hashes yourself:
