@@ -2,9 +2,9 @@
 
 Every claim in this repository that can be checked on chain, with the link to check it.
 
-> **Status: not yet deployed to mainnet.** This file is filled in by the deployment, not written
-> ahead of it. Nothing below is a placeholder standing in for a result we expect — an empty row
-> means the transaction has not happened yet. Deploying replaces this notice.
+> **Status: deployed to mainnet; the demonstration transactions are still to come.** This file is
+> filled in by what actually happens, not written ahead of it. An empty row below means that
+> transaction has not been made yet.
 
 ## Network
 
@@ -18,10 +18,23 @@ Every claim in this repository that can be checked on chain, with the link to ch
 
 | Contract | Address | Class hash |
 |---|---|---|
-| `PolicyGate` | — | — |
-| `IssuerRegistry` | — | — |
-| `RevocationRegistry` | — | — |
-| `PolicyRegistry` | — | — |
+| `PolicyGate` | [`0x061c734f…dfc6b2`](https://voyager.online/contract/0x061c734fe518f4c1a0e46d3d2a35b4ff1ab0df17dec510cff401d25e67dfc6b2) | `0x009191b1a66cd82e64a57bf03c3a8e1874facf90ef1bdbd79f47da7473cd97d9` |
+| `IssuerRegistry` | [`0x001cc4f1…d3aae7`](https://voyager.online/contract/0x001cc4f14b4af4f7b1d7a6b973fbe968513abf1c94a3e9602c7fdd14e3d3aae7) | `0x0782d17348efb0fd566218f7f67ff11ef85b145035bc4ddec756ab61cd979411` |
+| `RevocationRegistry` | [`0x035cc9e0…655c6d`](https://voyager.online/contract/0x035cc9e0dd4767aa259d6d7a6c6c10cb58fc97acdc0b45b7541807329a655c6d) | `0x028f748cdd825c31e3ad826ad0508ccd75e4616be7a8ac7d54fa4461a704a2c1` |
+| `PolicyRegistry` | [`0x01b0cf17…7ab9ee`](https://voyager.online/contract/0x01b0cf177a70f390af44dc706e7867fa5d0be8920c14d23d4230955a027ab9ee) | `0x05912f7ebcdb995bc86df71f85e869c1c1137bd8a46895c51bd0c73cf1b8fed5` |
+
+The same four classes are deployed on Sepolia, at the class hashes above — byte for byte the same
+code on both networks. Sepolia addresses are in
+[`contracts/deployments/sepolia.json`](./contracts/deployments/sepolia.json).
+
+### The gate says what it is wired to
+
+The pool and the three registry pointers are fixed at construction and have no setters, so you can
+confirm the wiring yourself rather than trusting this table:
+
+```bash
+sncast call --url https://api.cartridge.gg/x/starknet/mainnet   --contract-address 0x061c734fe518f4c1a0e46d3d2a35b4ff1ab0df17dec510cff401d25e67dfc6b2   --function privacy_pool        # then issuer_registry, revocation_registry, policy_registry
+```
 
 Reproduce the class hashes yourself:
 

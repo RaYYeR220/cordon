@@ -17,6 +17,13 @@
 #   SNCAST_ACCOUNT  sncast account name          (default: deployer)
 #   ACCOUNTS_FILE   path to the sncast accounts file
 #
+# Optional:
+#   DECLARE_L2_GAS  explicit L2 gas bound for declarations. sncast's own estimate is padded well
+#                   above real usage — PolicyGate actually consumes about 823M L2 gas but the
+#                   estimate reserves nearer 1.24G, which a correctly-sized balance can fail to
+#                   cover. Set this to fund a deployment tightly. The network still charges only
+#                   what is used; this is a ceiling, not a price.
+#
 set -euo pipefail
 
 NETWORK="${1:-}"
@@ -84,8 +91,9 @@ print(int(m.group(0), 16) if m else 'unreadable')
 "; }
 
 declare_class() {
-  local name="$1" out hash
-  out="$("${SNCAST[@]}" declare --url "$RPC" --contract-name "$name" 2>&1 || true)"
+  local name="$1" out hash bounds=()
+  [ -n "${DECLARE_L2_GAS:-}" ] && bounds=(--l2-gas "$DECLARE_L2_GAS")
+  out="$("${SNCAST[@]}" declare --url "$RPC" --contract-name "$name" "${bounds[@]}" 2>&1 || true)"
   hash="$(printf '%s' "$out" | field class_hash)"
   if [ -z "$hash" ]; then
     # Already declared is a success, not a failure: recover the hash from the artifact.

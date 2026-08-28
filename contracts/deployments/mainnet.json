@@ -1,0 +1,18 @@
+{
+  "network": "mainnet",
+  "rpc": "https://api.cartridge.gg/x/starknet/mainnet",
+  "owner": "0x033d61d79f106779561b3d10a472946b2fc8f8fcaffc3104558d286cc00159b3",
+  "strk20_pool": "0x040337b1af3c663e86e333bab5a4b28da8d4652a15a69beee2b677776ffe812a",
+  "classes": {
+    "IssuerRegistry": "0x0782d17348efb0fd566218f7f67ff11ef85b145035bc4ddec756ab61cd979411",
+    "RevocationRegistry": "0x028f748cdd825c31e3ad826ad0508ccd75e4616be7a8ac7d54fa4461a704a2c1",
+    "PolicyRegistry": "0x05912f7ebcdb995bc86df71f85e869c1c1137bd8a46895c51bd0c73cf1b8fed5",
+    "PolicyGate": "0x009191b1a66cd82e64a57bf03c3a8e1874facf90ef1bdbd79f47da7473cd97d9"
+  },
+  "contracts": {
+    "IssuerRegistry": "0x001cc4f14b4af4f7b1d7a6b973fbe968513abf1c94a3e9602c7fdd14e3d3aae7",
+    "RevocationRegistry": "0x035cc9e0dd4767aa259d6d7a6c6c10cb58fc97acdc0b45b7541807329a655c6d",
+    "PolicyRegistry": "0x01b0cf177a70f390af44dc706e7867fa5d0be8920c14d23d4230955a027ab9ee",
+    "PolicyGate": "0x061c734fe518f4c1a0e46d3d2a35b4ff1ab0df17dec510cff401d25e67dfc6b2"
+  }
+}
