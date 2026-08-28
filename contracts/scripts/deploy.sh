@@ -3,20 +3,19 @@
 # Declare and deploy the Cordon contracts, in dependency order, and record the
 # resulting addresses under deployments/<network>.json.
 #
-# The script is idempotent: declaring a class that is already on chain is not an
-# error, and re-running after a partial failure re-uses the classes it already
-# declared. Deployment itself is not idempotent — re-running deploys fresh
-# instances, so check the deployments file before you run it twice.
+# Declaring a class that is already on chain is not an error: the script reads the
+# class hash back from the build artifact either way. Deployment is not idempotent —
+# re-running deploys fresh instances, so check the deployments file before running
+# it twice against the same network.
 #
 # Usage:
-#   OWNER=0x... ./scripts/deploy.sh mainnet
 #   OWNER=0x... ./scripts/deploy.sh sepolia
+#   OWNER=0x... ./scripts/deploy.sh mainnet
 #
 # Required environment:
-#   OWNER                       address that will own the registries and the gate
-#   STARKNET_ACCOUNT            path to the starkli account file
-#   STARKNET_KEYSTORE           path to the starkli keystore file
-#   STARKNET_KEYSTORE_PASSWORD  keystore password
+#   OWNER           address that will own the registries and the gate
+#   SNCAST_ACCOUNT  sncast account name          (default: deployer)
+#   ACCOUNTS_FILE   path to the sncast accounts file
 #
 set -euo pipefail
 
@@ -34,14 +33,15 @@ case "$NETWORK" in
 esac
 
 : "${OWNER:?set OWNER to the address that should own the deployed contracts}"
-: "${STARKNET_ACCOUNT:?set STARKNET_ACCOUNT to your starkli account file}"
-: "${STARKNET_KEYSTORE:?set STARKNET_KEYSTORE to your starkli keystore file}"
-
+ACCOUNT="${SNCAST_ACCOUNT:-deployer}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ARTIFACTS="$ROOT/target/dev"
 OUT_DIR="$ROOT/deployments"
 OUT="$OUT_DIR/$NETWORK.json"
 mkdir -p "$OUT_DIR"
+
+SNCAST=(sncast --json --wait --wait-timeout 300)
+[ -n "${ACCOUNTS_FILE:-}" ] && SNCAST+=(--accounts-file "$ACCOUNTS_FILE")
+SNCAST+=(--account "$ACCOUNT")
 
 echo "network : $NETWORK"
 echo "rpc     : $RPC"
@@ -49,37 +49,56 @@ echo "owner   : $OWNER"
 echo "pool    : $POOL"
 echo
 
-# The gate binds the pool at construction: only this address may drive privacy_invoke, and it is
-# the only address the gate will ever approve. Deploying against the wrong pool produces a gate
-# that silently refuses every transaction, so confirm the address is a live contract first.
-if ! starkli class-hash-at "$POOL" --rpc "$RPC" >/dev/null 2>&1; then
+# The gate binds the pool at construction: only that address may drive privacy_invoke, and it is the
+# only address the gate will ever approve. Deploying against a wrong pool produces a gate that
+# refuses every transaction, so confirm a contract is actually there first.
+if ! curl -fsS -X POST "$RPC" -H 'content-type: application/json' \
+     -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"starknet_getClassHashAt\",\"params\":[\"latest\",\"$POOL\"]}" \
+   | grep -q '"result"'; then
   echo "no contract deployed at pool address $POOL on $NETWORK" >&2
   exit 1
 fi
 
+cd "$ROOT"
 scarb build
 
-# Declare a class and echo its hash. starkli exits non-zero on a genuine failure,
-# but treats an already-declared class as success and still prints the hash, so
-# the hash is recovered from the artifact either way.
-declare_class() {
-  local name="$1"
-  local artifact="$ARTIFACTS/cordon_$name.contract_class.json"
-  local hash
-  hash="$(starkli class-hash "$artifact")"
+# jq is not assumed; sncast --json emits one JSON object per line and python is already a
+# prerequisite of the toolchain.
+field() { python -c "
+import json,sys
+for line in sys.stdin:
+    line = line.strip()
+    if not line.startswith('{'): continue
+    obj = json.loads(line)
+    if '$1' in obj:
+        print(obj['$1']); break
+"; }
 
-  if starkli class-by-hash "$hash" --rpc "$RPC" >/dev/null 2>&1; then
-    echo "declare $name: already on chain" >&2
-  else
-    echo "declare $name: $hash" >&2
-    starkli declare "$artifact" --rpc "$RPC" --watch >/dev/null
+# Normalise a felt to a decimal string, so that leading zeros, quoting and array
+# punctuation cannot make two equal addresses compare unequal.
+felt() { python -c "
+import re,sys
+raw = sys.stdin.read()
+m = re.search(r'0[xX][0-9a-fA-F]+', raw)
+print(int(m.group(0), 16) if m else 'unreadable')
+"; }
+
+declare_class() {
+  local name="$1" out hash
+  out="$("${SNCAST[@]}" declare --url "$RPC" --contract-name "$name" 2>&1 || true)"
+  hash="$(printf '%s' "$out" | field class_hash)"
+  if [ -z "$hash" ]; then
+    # Already declared is a success, not a failure: recover the hash from the artifact.
+    hash="$(starkli class-hash "target/dev/cordon_$name.contract_class.json" 2>/dev/null || true)"
   fi
+  [ -n "$hash" ] || { echo "could not determine a class hash for $name" >&2; printf '%s\n' "$out" >&2; exit 1; }
+  echo "declare $name -> $hash" >&2
   echo "$hash"
 }
 
 deploy() {
   local hash="$1"; shift
-  starkli deploy "$hash" "$@" --rpc "$RPC" --watch --not-unique 2>/dev/null | tail -n 1
+  "${SNCAST[@]}" deploy --url "$RPC" --class-hash "$hash" --constructor-calldata "$@" | field contract_address
 }
 
 ISSUER_CLASS="$(declare_class IssuerRegistry)"
@@ -102,15 +121,16 @@ echo "PolicyRegistry      $POLICY_REGISTRY"
 POLICY_GATE="$(deploy "$GATE_CLASS" "$OWNER" "$POOL" "$ISSUER_REGISTRY" "$REVOCATION_REGISTRY" "$POLICY_REGISTRY")"
 echo "PolicyGate          $POLICY_GATE"
 
-# The registry pointers and the pool are immutable after construction, so a wrong address here is
+# The pool and the registry pointers are immutable after construction, so a wrong address here is
 # only fixable by redeploying. Read them back and fail loudly rather than recording a broken gate.
 echo
 echo "verifying the deployed gate..."
 for pair in "privacy_pool:$POOL" "issuer_registry:$ISSUER_REGISTRY" \
             "revocation_registry:$REVOCATION_REGISTRY" "policy_registry:$POLICY_REGISTRY"; do
   getter="${pair%%:*}"; expected="${pair#*:}"
-  actual="$(starkli call "$POLICY_GATE" "$getter" --rpc "$RPC" | tr -d '[]", \n')"
-  if [ "$(printf '%d' "$actual")" = "$(printf '%d' "$expected")" ]; then
+  actual="$("${SNCAST[@]}" call --url "$RPC" --contract-address "$POLICY_GATE" \
+            --function "$getter" | field response_raw | felt)"
+  if [ "$actual" = "$(printf '%s' "$expected" | felt)" ]; then
     echo "  ok   $getter"
   else
     echo "  FAIL $getter: gate reports $actual, expected $expected" >&2

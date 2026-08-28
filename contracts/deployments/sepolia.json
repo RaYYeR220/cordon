@@ -1,0 +1,18 @@
+{
+  "network": "sepolia",
+  "rpc": "https://api.cartridge.gg/x/starknet/sepolia",
+  "owner": "0x033d61d79f106779561b3d10a472946b2fc8f8fcaffc3104558d286cc00159b3",
+  "strk20_pool": "0x0254a6b2997ef52e9f830ce1f543f6b29768295e8d17e2267d672c552cfe0d91",
+  "classes": {
+    "IssuerRegistry": "0x0782d17348efb0fd566218f7f67ff11ef85b145035bc4ddec756ab61cd979411",
+    "RevocationRegistry": "0x028f748cdd825c31e3ad826ad0508ccd75e4616be7a8ac7d54fa4461a704a2c1",
+    "PolicyRegistry": "0x05912f7ebcdb995bc86df71f85e869c1c1137bd8a46895c51bd0c73cf1b8fed5",
+    "PolicyGate": "0x009191b1a66cd82e64a57bf03c3a8e1874facf90ef1bdbd79f47da7473cd97d9"
+  },
+  "contracts": {
+    "IssuerRegistry": "0x0162c4a828d467f0f77fa3ddf772a96ed27a96e6f97b8d2c162726674deecbe3",
+    "RevocationRegistry": "0x0486e07833773915818b22be9157251851c84cd2b2f111616fa1fb94a1444e84",
+    "PolicyRegistry": "0x01fa672554cbfb3638c2eb55f703cbef4495847b48e4a38d42398427202c90f5",
+    "PolicyGate": "0x0781df2ac76971bee0a62d2d2af408baf9a737d64c8dafb0cc8fb331a2555e5a"
+  }
+}
