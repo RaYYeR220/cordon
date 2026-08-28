@@ -1,0 +1,19 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "installCommand": "npm install",
+  "buildCommand": "npm run build -w @cordon/sdk && npm run build -w @cordon/react && npm run build -w @cordon/web",
+  "outputDirectory": "apps/web/.next",
+  "experimentalServices": {
+    "web": {
+      "root": "apps/web",
+      "routePrefix": "/",
+      "framework": "nextjs"
+    },
+    "issuer": {
+      "root": "services/issuer",
+      "entrypoint": "dist/index.js",
+      "routePrefix": "/_/issuer"
+    }
+  }
+}

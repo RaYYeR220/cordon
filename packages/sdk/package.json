@@ -29,8 +29,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "vectors": "tsx scripts/print-vectors.ts",
-    "prepare": "npm run build"
+    "vectors": "tsx scripts/print-vectors.ts"
   },
   "keywords": [
     "starknet",

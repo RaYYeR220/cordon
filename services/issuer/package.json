@@ -19,7 +19,7 @@
     "refresh": "tsx scripts/refresh-ofac.ts"
   },
   "dependencies": {
-    "@cordon/sdk": "file:../../packages/sdk",
+    "@cordon/sdk": "^0.1.0",
     "fast-xml-parser": "^5.3.4",
     "fastify": "^5.7.4",
     "starknet": "^10.4.0"

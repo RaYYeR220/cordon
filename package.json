@@ -15,6 +15,7 @@
     "build": "npm run build -w @cordon/sdk && npm run build -w @cordon/react && npm run build -w @cordon/web",
     "test": "npm run test -w @cordon/sdk && npm run test -w @cordon/react && npm run test -w @cordon/issuer",
     "typecheck": "npm run typecheck -w @cordon/sdk && npm run typecheck -w @cordon/react && npm run typecheck -w @cordon/web && npm run typecheck -w @cordon/issuer",
-    "dev": "npm run dev -w @cordon/web"
+    "dev": "npm run dev -w @cordon/web",
+    "postinstall": "npm run build -w @cordon/sdk && npm run build -w @cordon/react"
   }
 }

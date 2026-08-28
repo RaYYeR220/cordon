@@ -36,8 +36,7 @@
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest",
-    "prepare": "npm run build"
+    "test:watch": "vitest"
   },
   "keywords": [
     "react",
@@ -58,7 +57,7 @@
     "@starknet-io/get-starknet-wallet-standard": "^6.0.4"
   },
   "devDependencies": {
-    "@cordon/sdk": "file:../sdk",
+    "@cordon/sdk": "^0.1.0",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.0",

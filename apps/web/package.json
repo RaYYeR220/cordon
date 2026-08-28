@@ -10,8 +10,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@cordon/react": "file:../../packages/react",
-    "@cordon/sdk": "file:../../packages/sdk",
+    "@cordon/react": "^0.1.0",
+    "@cordon/sdk": "^0.1.0",
     "@starknet-io/get-starknet-discovery": "6.0.4",
     "@starknet-io/get-starknet-wallet-standard": "6.0.4",
     "next": "^16.3.3",
