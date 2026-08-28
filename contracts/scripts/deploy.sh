@@ -96,8 +96,21 @@ declare_class() {
   out="$("${SNCAST[@]}" declare --url "$RPC" --contract-name "$name" "${bounds[@]}" 2>&1 || true)"
   hash="$(printf '%s' "$out" | field class_hash)"
   if [ -z "$hash" ]; then
-    # Already declared is a success, not a failure: recover the hash from the artifact.
-    hash="$(starkli class-hash "target/dev/cordon_$name.contract_class.json" 2>/dev/null || true)"
+    # A class that is already on chain is a success; anything else is not. Distinguish the two
+    # rather than always falling back to the local artifact's hash: that reports a hash for a class
+    # which never reached the chain, and the real failure only surfaces later as "class is not
+    # declared" at deploy time, pointing at the wrong step.
+    case "$out" in
+      *"already declared"*|*"ClassAlreadyDeclared"*)
+        hash="$(starkli class-hash "target/dev/cordon_$name.contract_class.json" 2>/dev/null || true)"
+        echo "declare $name: already on chain" >&2
+        ;;
+      *)
+        echo "declaring $name failed:" >&2
+        printf '%s' "$out" >&2; echo >&2
+        exit 1
+        ;;
+    esac
   fi
   [ -n "$hash" ] || { echo "could not determine a class hash for $name" >&2; printf '%s\n' "$out" >&2; exit 1; }
   echo "declare $name -> $hash" >&2
