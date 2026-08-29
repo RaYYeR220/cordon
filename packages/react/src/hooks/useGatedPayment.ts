@@ -188,7 +188,15 @@ export interface UseGatedPaymentOptions {
   token?: string;
   /** Called once a refusal is known, whether predicted or on chain. */
   onRefused?: (refusal: Refusal, transactionHash: string | null) => void;
-  onConfirmed?: (result: Strk20SubmitResult) => void;
+  /**
+   * Called once the transaction executed.
+   *
+   * The authorisation comes with it because some of what a caller needs is only in there and only
+   * for one leg: a `Fund` generates its settlement id inside the SDK, and that id is the payee's
+   * only handle on the escrow. Reading it back off the hook's state afterwards races the next
+   * payment, which would silently lose it.
+   */
+  onConfirmed?: (result: Strk20SubmitResult, authorization: GateAuthorization) => void;
 }
 
 export interface PayOptions {
@@ -593,7 +601,7 @@ export function useGatedPayment(options: UseGatedPaymentOptions = {}): UseGatedP
           return;
         }
         setStatus("confirmed");
-        current.onConfirmed?.(outcome.result);
+        current.onConfirmed?.(outcome.result, prepared.authorization);
       } catch (caught) {
         // The two prepare failures are conditions with their own answers, so they get their own
         // states rather than being flattened into "something went wrong".

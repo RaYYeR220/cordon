@@ -29,7 +29,12 @@ import {
   type ReactNode,
 } from "react";
 import { RpcProvider } from "starknet";
-import { fetchGateContext, type GateContext, type Refusal } from "@cordon/sdk";
+import {
+  fetchGateContext,
+  type GateContext,
+  type Refusal,
+  type SubjectKeypair,
+} from "@cordon/sdk";
 
 import {
   connectWallet,
@@ -111,6 +116,22 @@ export interface CordonContextValue {
 
   refusals: SessionRefusal[];
   recordRefusal: (entry: Omit<SessionRefusal, "at"> & { at?: number }) => void;
+
+  /**
+   * The subject pseudonyms this session holds, by credential slot.
+   *
+   * Here rather than inside `useCordonCredential` for the same reason the wallet connection is:
+   * two screens that both ask for the subject must get the same one. A passport page derives the
+   * pseudonym from a wallet signature and a payment page signs with it, and if each hook instance
+   * kept its own copy the second page would find nothing and the payment could never be
+   * authorised.
+   *
+   * It stays in memory. The key can be re-derived from a wallet signature on any device, so
+   * persisting it would add a stealable secret and buy a click; `useCordonCredential`'s
+   * `persistSubjectKey` is the opt-in for callers who want that trade anyway.
+   */
+  subjects: Readonly<Record<string, SubjectKeypair | null>>;
+  setSubject: (slot: string, keypair: SubjectKeypair | null) => void;
 }
 
 const CordonContext = createContext<CordonContextValue | null>(null);
@@ -161,6 +182,7 @@ export function CordonProvider({
   );
   const [refusals, setRefusals] = useState<SessionRefusal[]>([]);
   const [gateContext, setGateContext] = useState<Reading<GateContext> | null>(null);
+  const [subjects, setSubjects] = useState<Record<string, SubjectKeypair | null>>({});
 
   const resolvedStorage = useMemo<CordonStorage | null>(() => {
     if (storage !== undefined) return storage;
@@ -275,6 +297,20 @@ export function CordonProvider({
     [],
   );
 
+  const setSubject = useCallback((slot: string, keypair: SubjectKeypair | null): void => {
+    setSubjects((current) => {
+      if (current[slot] === keypair) return current;
+      return { ...current, [slot]: keypair };
+    });
+  }, []);
+
+  // A pseudonym belongs to the account that derived it. Forgetting it on disconnect is what stops
+  // the next wallet inheriting the previous one's identity and signing with a key its credential
+  // does not name.
+  useEffect(() => {
+    if (!connection) setSubjects({});
+  }, [connection]);
+
   // Keep the identity of the context stable across renders that changed nothing, so a consumer
   // rendering a live meter does not re-render on every unrelated state change.
   const value = useMemo<CordonContextValue>(
@@ -297,6 +333,8 @@ export function CordonProvider({
       gateContext,
       refusals,
       recordRefusal,
+      subjects,
+      setSubject,
     }),
     [
       config,
@@ -317,6 +355,8 @@ export function CordonProvider({
       gateContext,
       refusals,
       recordRefusal,
+      subjects,
+      setSubject,
     ],
   );
 

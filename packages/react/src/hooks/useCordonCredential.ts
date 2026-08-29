@@ -126,12 +126,23 @@ function storageKey(gate: string, slot: string, part: string): string {
 export function useCordonCredential(
   options: UseCordonCredentialOptions = {},
 ): UseCordonCredential {
-  const { config, storage, provider, registries, connection } = useCordonContext();
+  const {
+    config,
+    storage,
+    provider,
+    registries,
+    connection,
+    subjects,
+    setSubject: setSessionSubject,
+  } = useCordonContext();
   const slot = options.slot ?? "default";
   const persistSubjectKey = options.persistSubjectKey ?? false;
 
   const [stored, setStored] = useState<Credential | null>(null);
-  const [subject, setSubjectState] = useState<SubjectKeypair | null>(null);
+  // The pseudonym lives on the provider, not here. Two screens both calling this hook are the
+  // normal case — a passport page derives the key, a payment page signs with it — and per-instance
+  // state would leave the second one empty.
+  const subject = subjects[slot] ?? null;
   const [importError, setImportError] = useState<string | null>(null);
   const [issuerPublicKey, setIssuerPublicKey] = useState<Felt | null>(null);
   const [issuerActive, setIssuerActive] = useState<boolean | null>(null);
@@ -157,12 +168,12 @@ export function useCordonCredential(
     if (rawKey) {
       try {
         const parsed = JSON.parse(rawKey) as SubjectKeypair;
-        if (parsed.privateKey && parsed.publicKey) setSubjectState(parsed);
+        if (parsed.privateKey && parsed.publicKey) setSessionSubject(slot, parsed);
       } catch {
         // Same: a malformed key is dropped rather than thrown.
       }
     }
-  }, [storage, config.gateAddress, slot, persistSubjectKey, options.credential]);
+  }, [storage, config.gateAddress, slot, persistSubjectKey, options.credential, setSessionSubject]);
 
   const persist = useCallback(
     (next: Credential | null): void => {
@@ -220,13 +231,13 @@ export function useCordonCredential(
 
   const setSubject = useCallback(
     (keypair: SubjectKeypair | null): void => {
-      setSubjectState(keypair);
+      setSessionSubject(slot, keypair);
       if (!storage || !persistSubjectKey) return;
       const key = storageKey(config.gateAddress, slot, "subject");
       if (keypair) storage.setItem(key, JSON.stringify(keypair));
       else storage.removeItem(key);
     },
-    [storage, persistSubjectKey, config.gateAddress, slot],
+    [setSessionSubject, storage, persistSubjectKey, config.gateAddress, slot],
   );
 
   const generateSubject = useCallback((): SubjectKeypair => {
