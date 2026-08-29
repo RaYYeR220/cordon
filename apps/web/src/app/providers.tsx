@@ -21,6 +21,7 @@ export function Providers({ children }: { children: ReactNode }) {
   const config = useMemo(
     () => ({
       gateAddress: app.gateAddress ?? "",
+      ...(app.registries ? { registries: app.registries } : {}),
       poolAddress: app.poolAddress,
       rpcUrl: app.rpcUrl,
       token: app.token,
