@@ -52,13 +52,13 @@ They must equal the class hashes above. If they do not, the deployed code is not
 
 ## Transactions
 
-| # | What it proves | Result | Transaction |
-|---|---|---|---|
-| 1 | A credentialed payer inside the policy settles privately through the gate | — | — |
-| 2 | A payee presents their own credential and claims an escrowed settlement | — | — |
-| 3 | A second policy-compliant payment, on the direct leg | — | — |
-| 4 | **A payment over the policy cap is refused on chain** | — | — |
-| 5 | **A payee revoked after funding cannot claim** | — | — |
+| # | Leg | Policy | What it proves | Result | Transaction |
+|---|---|---|---|---|---|
+| 1 | `Direct` | `PAY_ACCREDITED_V1` | A credentialed payer inside the policy settles privately through the gate | — | — |
+| 2 | `Fund` | `SETTLE_ACCREDITED_V1` | A payer parks value for one named payee under a policy a direct payment cannot satisfy | — | — |
+| 3 | `Claim` | `RECV_KYC_L2_V1` | The payee presents their own credential, with their own key, and takes it | — | — |
+| 4 | `Direct` | `PAY_ACCREDITED_V1` | **A payment over the policy cap is refused on chain** | — | — |
+| 5 | `Claim` | `RECV_KYC_L2_V1` | **A payee revoked after funding cannot claim** | — | — |
 
 Rows 4 and 5 are reverted transactions. They are the point of the project, and they are deliberately
 **not** listed in `strk20.json`: the sprint's eligibility check requires transactions that succeeded,
@@ -75,6 +75,21 @@ The script re-reads `strk20.json`, fetches each receipt from a public RPC endpoi
 the transaction exists, its execution status is `SUCCEEDED`, it carries an event emitted by the
 STRK20 pool, and it carries an event emitted by our `PolicyGate`. It prints a line per check and
 exits non-zero on the first failure. It takes no arguments and needs no credentials.
+
+The state those transactions ran against is checkable on its own, with no transaction and no
+wallet:
+
+```bash
+node scripts/rehearse.mjs
+```
+
+It reads the gate's four wiring pointers, the registered issuer's key and standing, and all three
+published policies field for field; builds the action array for every leg and asserts the shape,
+the three wallet placeholders and that a withdraw carries exactly the signed amount; and predicts
+each refusal above against the policies as published — including `CORDON_OVER_CAP` at step 10 and
+`CORDON_REVOKED` at step 7. Forty-three checks, or a hundred and two with `ISSUER_PRIVATE_KEY` set,
+which additionally signs a credential and verifies it against the key read off the `IssuerRegistry`
+rather than a locally derived one. Nothing is sent and no account key is touched.
 
 ## Timing
 
