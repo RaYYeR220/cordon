@@ -1,17 +1,25 @@
 "use client";
 
-import { useMemo } from "react";
-import { useGateFeed } from "@cordon/react";
-import { refusalForCode } from "@cordon/sdk";
+import { useEffect, useMemo, useState } from "react";
+import {
+  readIssuerActive,
+  readPolicy,
+  useCordonContext,
+  useGateFeed,
+  type SessionRefusal,
+} from "@cordon/react";
+import { feltToShortString, refusalForCode, shortStringToFelt, type Refusal } from "@cordon/sdk";
 
 import { ChecksLadder } from "@/components/record/ChecksLadder";
 import { CordonLine } from "@/components/record/CordonLine";
 import { Folio } from "@/components/record/Folio";
 import { RefusalSignal } from "@/components/record/RefusalSignal";
-import { TxRef } from "@/components/record/TxRef";
+import { ContractRef, TxRef } from "@/components/record/TxRef";
 import {
   Agate,
   BigFigure,
+  Row,
+  Rows,
   Rule,
   SectionHead,
   Stat,
@@ -19,6 +27,11 @@ import {
 } from "@/components/record/primitives";
 import { STEP_COUNT, stepOf } from "@/lib/record/enforcement";
 import { formatClock, formatCount, formatPercent, formatUnits } from "@/lib/record/format";
+import {
+  LIVE_CLAIM_POLICY_ID,
+  LIVE_POLICY_ID,
+  LIVE_SETTLE_POLICY_ID,
+} from "@/lib/record/live";
 import {
   BLOCK_TIME_SECONDS,
   HERO_REVERT,
@@ -44,61 +57,352 @@ import { useRecordSource } from "@/lib/record/source";
  * cannot be one. A refusal panics, the panic reverts the whole pool
  * transaction, and a reverted transaction emits nothing. Every row therefore
  * says where it came from — a published event, or a receipt.
+ *
+ * That asymmetry is also why the two records are two components rather than one
+ * with conditionals threaded through every figure. The sample record rolls up
+ * 1,284 seeded decisions over a 24-hour window; the chain publishes no refusal
+ * feed at all, so the live record can only count what this browser watched
+ * happen. They share the decisions table and nothing else — and keeping the
+ * sample constants out of the live component is what makes it impossible for a
+ * sample transaction hash to reach a Voyager link.
  */
 export function MonitorScreen() {
   const source = useRecordSource();
-  const feed = useGateFeed({ limit: 25, pollMs: source.live ? 15_000 : 0 });
+  return source.live ? <LiveMonitor /> : <SampleMonitor />;
+}
 
-  const rows = useMemo(() => {
-    if (!source.live) {
-      return SAMPLE_FEED.map((row) => ({
-        id: `${row.block}-${row.reference}`,
-        at: row.at,
-        block: row.block,
-        verdict: row.verdict,
-        origin: row.verdict === "pass" ? ("event" as const) : ("receipt" as const),
-        kind: row.kind,
-        policyId: row.policyId,
-        amount: row.amount,
-        epoch: row.epoch,
-        code: row.code,
-        reference: row.reference,
-        isHash: row.reference.startsWith("0x"),
-      }));
-    }
+/* ── live ───────────────────────────────────────────────────────────────── */
 
-    return feed.entries.map((entry) =>
-      entry.verdict === "pass"
-        ? {
-            id: entry.id,
-            at: entry.at,
-            block: entry.blockNumber,
-            verdict: "pass" as const,
-            origin: "event" as const,
-            kind: entry.event.kind,
-            policyId: entry.event.kind === "PolicyPassed" ? entry.event.policyLabel : "—",
-            amount: entry.event.amount,
-            epoch: entry.event.kind === "PolicyPassed" ? entry.event.epoch : null,
-            code: null,
-            reference: entry.transactionHash,
-            isHash: true,
-          }
-        : {
-            id: entry.id,
-            at: Math.floor(entry.at / 1000),
-            block: entry.blockNumber,
-            verdict: "refused" as const,
-            origin: "receipt" as const,
-            kind: "Direct" as const,
-            policyId: entry.policyId ?? "—",
-            amount: null,
-            epoch: null,
-            code: entry.refusal.code,
-            reference: entry.transactionHash,
-            isHash: true,
-          }
-    );
-  }, [source.live, feed.entries]);
+/**
+ * The published policies this build is configured against.
+ *
+ * Neither registry can be enumerated — there is no `all_policies()` and no
+ * `all_issuers()` — so a count over these ids is the only honest one available,
+ * and the screen says so rather than presenting it as the whole registry.
+ */
+const CONFIGURED_POLICIES = [LIVE_POLICY_ID, LIVE_SETTLE_POLICY_ID, LIVE_CLAIM_POLICY_ID].filter(
+  (id): id is string => Boolean(id)
+);
+
+function LiveMonitor() {
+  const { config, registries, refusals } = useCordonContext();
+  const feed = useGateFeed({ limit: 25, pollMs: 15_000 });
+  const standing = useRegistryStanding();
+
+  const rows = useMemo<DecisionRow[]>(
+    () =>
+      feed.entries.map((entry) =>
+        entry.verdict === "pass"
+          ? {
+              id: entry.id,
+              at: entry.at,
+              block: entry.blockNumber,
+              verdict: "pass" as const,
+              origin: "event",
+              kind: entry.event.kind,
+              policyId: entry.event.kind === "PolicyPassed" ? entry.event.policyLabel : "—",
+              amount: entry.event.amount,
+              epoch: entry.event.kind === "PolicyPassed" ? entry.event.epoch : null,
+              code: null,
+              reference: entry.transactionHash,
+              isHash: true,
+            }
+          : {
+              id: entry.id,
+              at: Math.floor(entry.at / 1000),
+              block: entry.blockNumber,
+              verdict: "refused" as const,
+              origin: "receipt",
+              kind: "Direct",
+              policyId: entry.policyId ?? "—",
+              amount: null,
+              epoch: null,
+              code: entry.refusal.code,
+              reference: entry.transactionHash,
+              isHash: true,
+            }
+      ),
+    [feed.entries]
+  );
+
+  const byCode = useCodeTally(refusals);
+  const worst = byCode[0]?.count ?? 0;
+  const latest = refusals[0] ?? null;
+  const latestStep = latest ? (latest.refusal.step ?? stepOf(latest.refusal.code)) : null;
+
+  // An event read that came back with nothing is not the same as a gate that has passed nothing.
+  // The read walks a bounded number of pages rather than the whole chain, so an empty result means
+  // no event was found in what was read — which is a fact about the read, not about the gate. It
+  // is reported as unavailable and said out loud below the table rather than printed as a zero.
+  const passesRead = feed.passes.length > 0 ? feed.passes.length : null;
+
+  return (
+    <article>
+      <Folio
+        number="04"
+        running="Cordon · 04 · Gate monitor"
+        title="The public record of decisions"
+        facts={[
+          { label: "Source", value: "PolicyPassed events · session receipts" },
+          {
+            label: "Gate",
+            value: config.gateAddress ? <ContractRef address={config.gateAddress} live /> : null,
+          },
+          {
+            label: "Window",
+            value: passesRead === null ? null : `${formatCount(passesRead)} most recent`,
+          },
+        ]}
+      />
+
+      {/* ── the figure ─────────────────────────────────────────────────── */}
+      <section className="grid4 items-start pt-gut">
+        <div className="span2">
+          <BigFigure hero tone="refuse" value={formatCount(refusals.length)} word="Refused">
+            refusals this browser session watched happen. There is no refusal feed to read back: a
+            refusal panics, the panic reverts the whole pool transaction, and a reverted transaction
+            emits nothing. So the passes below are the chain&rsquo;s own and the refusals are
+            receipts this page held on to — which is the difference between a gate and a report
+            written afterwards.
+          </BigFigure>
+        </div>
+        <Stat
+          entries={[
+            {
+              label: "Passed",
+              value: passesRead === null ? null : formatCount(passesRead),
+            },
+            {
+              label: "Refused, this session",
+              value: formatCount(refusals.length),
+              tone: "refuse",
+            },
+            {
+              label: "Policies in force",
+              value: standing.policies === null ? null : formatCount(standing.policies.inForce),
+              unit: `of ${CONFIGURED_POLICIES.length} configured`,
+            },
+            {
+              label: "Issuers active",
+              value: standing.issuers === null ? null : formatCount(standing.issuers.active),
+              unit: standing.issuers === null ? undefined : `of ${standing.issuers.named.length}`,
+            },
+          ]}
+        />
+        <div>
+          <p className="label pb-tick">What was read</p>
+          <Rows>
+            <Row
+              label="Policy registry"
+              value={
+                registries?.available ? (
+                  <ContractRef address={registries.value.policyRegistry} live />
+                ) : null
+              }
+            />
+            <Row
+              label="Issuer registry"
+              value={
+                registries?.available ? (
+                  <ContractRef address={registries.value.issuerRegistry} live />
+                ) : null
+              }
+            />
+            <Row
+              label="Policy ids"
+              value={CONFIGURED_POLICIES.length ? CONFIGURED_POLICIES.join(" · ") : null}
+            />
+            <Row
+              label="Issuers named"
+              value={standing.issuers === null ? null : standing.issuers.named.join(" · ")}
+            />
+          </Rows>
+          <p className="note pt-tick">
+            Neither registry lists what it holds, so these two counts cover the policy ids this
+            build settles under and the issuers those policies name. A policy published under an id
+            this build does not know about is not counted — and is not claimed to be absent either.
+          </p>
+        </div>
+      </section>
+
+      {/* ── refusals, such as this session has seen ───────────────────── */}
+      <SectionHead
+        title="Refusals by panic code · this session"
+        meta={refusals.length ? `${formatCount(refusals.length)} watched` : "none watched"}
+        right="A refusal leaves no trace on chain to count"
+      />
+      <Rule />
+
+      <section className="grid4 items-start pt-bl">
+        <div className="span2">
+          {byCode.length ? (
+            <div className="grid grid-cols-[minmax(0,22ch)_minmax(0,1fr)_5ch] items-center gap-x-bl">
+              {byCode.map((entry) => (
+                <div key={entry.refusal.code} className="contents">
+                  <span className="font-mono text-agate border-b border-rule py-hair">
+                    {entry.refusal.code}
+                  </span>
+                  <span className="border-b border-rule py-hair">
+                    <span
+                      className="hairline block"
+                      style={{ width: `${(entry.count / worst) * 100}%`, height: 3 }}
+                    />
+                  </span>
+                  <span className="font-display text-body text-right border-b border-rule py-hair">
+                    {entry.count}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="lede">
+              Nothing has been refused in this session, so there is nothing here to count. This is
+              not a chart waiting for data: the chain has none to give.
+            </p>
+          )}
+          {byCode.length ? (
+            <p className="note pt-bl">
+              Every bar is a transaction this browser submitted and watched revert. Reload the page
+              and the tally is gone, because the only copy of it was in this tab.
+            </p>
+          ) : (
+            <p className="note pt-bl">
+              Compose a payment over the published cap on screen 01 and it appears here. The sample
+              record carries a worked rollup of a full day&rsquo;s refusals.
+            </p>
+          )}
+        </div>
+
+        <div className="span2">
+          <p className="label pb-tick">Why there is no rollup to read</p>
+          <p className="lede">
+            The gate emits <span className="font-mono">PolicyPassed</span> on every leg that clears
+            and emits nothing at all on a leg that does not. A refusal is a panic, a panic reverts
+            the whole pool transaction, and a reverted transaction leaves no event behind — so no
+            node, no indexer and no explorer can hand anyone a refusal feed.
+          </p>
+          <p className="note pt-tick">
+            That is a property worth stating rather than apologising for. A gate that could publish
+            its refusals would be publishing which pseudonyms failed which rule, permanently and to
+            everyone. The only party who learns a refusal happened is the one who paid the fee to
+            find out, and the only record of it is their own receipt.
+          </p>
+        </div>
+      </section>
+
+      {/* ── the feed ──────────────────────────────────────────────────── */}
+      <SectionHead
+        title="Decisions"
+        meta="Newest first"
+        right="No row names a party — no gate event carries one"
+      />
+      <DecisionsTable rows={rows} />
+      <p className="note pt-bl">
+        A <em>pass</em> row came from a `PolicyPassed` event the chain published. A{" "}
+        <em>refused</em> row came from a receipt, because a panic reverts the whole transaction and
+        a reverted transaction emits nothing — that asymmetry is exactly what makes this a gate
+        rather than a report written afterwards. Neither kind of row carries a subject key: the log
+        proves the rules held, not who paid whom.
+      </p>
+      {feed.status === "unavailable" ? (
+        <p className="note pt-tick">
+          The event read did not answer: {feed.error?.message ?? "the node was unreachable"}. The
+          table is empty because nothing was read, not because nothing happened.
+        </p>
+      ) : rows.length === 0 ? (
+        <p className="note pt-tick">
+          Nothing to list: no <span className="font-mono">PolicyPassed</span> event came back and no
+          refusal has been watched here. The read walks a bounded number of pages rather than the
+          whole chain, so an empty table says no event was found in what was read — not that this
+          gate has never passed anything. That is why the pass count above says <i>unavailable</i>{" "}
+          rather than nought.
+        </p>
+      ) : null}
+
+      {/* ── one row, opened up ───────────────────────────────────────── */}
+      <SectionHead
+        title="Under inspection"
+        meta={latest ? latest.refusal.code : "Nothing watched yet"}
+        right="The enforcement order is fixed in the Cairo contract"
+      />
+      <Rule weight="thin" />
+
+      <section className="grid4 items-start pt-bl">
+        <div className="span2">
+          {latest ? (
+            <>
+              <p className="quote">
+                {latest.refusal.title}. <em>The gate refused it.</em>
+              </p>
+              <div className="pt-bl">
+                <RefusalSignal
+                  refusal={latest.refusal}
+                  transactionHash={latest.transactionHash}
+                  at={Math.floor(latest.at / 1000)}
+                />
+              </div>
+              <Rows className="mt-bl">
+                <Row label="Policy judged against" value={latest.policyId} />
+                <Row label="Origin" value="A receipt this session kept. The chain published nothing." />
+              </Rows>
+            </>
+          ) : (
+            <>
+              <p className="quote">
+                No refusal has been watched in this session.{" "}
+                <em>There is nothing to open up.</em>
+              </p>
+              <p className="lede pt-bl">
+                A refusal reaches this screen one way only: a payment composed in this browser is
+                submitted, the gate panics, and the receipt comes back here. Nought is the honest
+                figure until then — this browser knows exactly how many refusals it watched, which
+                is the one count on the page that needs no node to stand behind it. The sample
+                record carries a worked example of a transfer refused over the per-transfer cap,
+                opened up line by line.
+              </p>
+            </>
+          )}
+        </div>
+
+        <div className="span2">
+          <p className="label pb-tick">
+            {latest
+              ? `The pipeline, as it ran — step ${latestStep ?? "—"} of ${STEP_COUNT}`
+              : `The pipeline, unrun — ${STEP_COUNT} steps`}
+          </p>
+          <ChecksLadder
+            ran={latest && latestStep !== null ? STEP_COUNT : 0}
+            failedAt={latest ? latestStep : null}
+            firedCode={latest ? latest.refusal.code : null}
+          />
+          <p className="note pt-bl">
+            The ladder is the contract&rsquo;s enforcement order, read from the SDK rather than
+            written here, so it is drawn whether or not anything has run down it. The monitor cannot
+            show which pseudonym a refusal belonged to, and does not guess.
+          </p>
+        </div>
+      </section>
+    </article>
+  );
+}
+
+/* ── sample ─────────────────────────────────────────────────────────────── */
+
+function SampleMonitor() {
+  const rows = SAMPLE_FEED.map<DecisionRow>((row) => ({
+    id: `${row.block}-${row.reference}`,
+    at: row.at,
+    block: row.block,
+    verdict: row.verdict,
+    origin: row.verdict === "pass" ? "event" : "receipt",
+    kind: row.kind,
+    policyId: row.policyId,
+    amount: row.amount,
+    epoch: row.epoch,
+    code: row.code,
+    reference: row.reference,
+    isHash: row.reference.startsWith("0x"),
+  }));
 
   const heroRefusal = refusalForCode(HERO_REVERT.code ?? "") ?? null;
   const overCap = SAMPLE_ROLLUP.breakdown[0]!;
@@ -116,11 +420,7 @@ export function MonitorScreen() {
           { label: "Source", value: "PolicyPassed events · revert receipts" },
           {
             label: "Window",
-            value: source.live
-              ? feed.status === "unavailable"
-                ? null
-                : `${rows.length} most recent`
-              : `blocks ${formatCount(SAMPLE_ROLLUP.windowFrom)} → ${formatCount(SAMPLE_ROLLUP.windowTo)}`,
+            value: `blocks ${formatCount(SAMPLE_ROLLUP.windowFrom)} → ${formatCount(SAMPLE_ROLLUP.windowTo)}`,
           },
           { label: "Block time", value: `~${BLOCK_TIME_SECONDS} s` },
         ]}
@@ -129,46 +429,21 @@ export function MonitorScreen() {
       {/* ── the figure ─────────────────────────────────────────────────── */}
       <section className="grid4 items-start pt-gut">
         <div className="span2">
-          <BigFigure
-            hero
-            tone="refuse"
-            value={source.live ? String(rows.filter((r) => r.verdict === "refused").length) : formatCount(SAMPLE_ROLLUP.refused)}
-            word="Refused"
-          >
-            {source.live ? (
-              <>
-                refusals this session watched happen. There is no refusal event to read back — a
-                revert emits nothing — so this counts what this browser saw, not what the chain
-                published. The passes below are the chain&rsquo;s own.
-              </>
-            ) : (
-              <>
-                of {formatCount(SAMPLE_ROLLUP.decisions)} decisions in the trailing 24 hours —{" "}
-                {formatPercent(BigInt(SAMPLE_ROLLUP.refused), BigInt(SAMPLE_ROLLUP.decisions))} per
-                cent. Every one is a transaction that reverted: the pool moved shielded value to the
-                gate, the gate read the credential and the policy, and the value went back where it
-                came from.
-              </>
-            )}
+          <BigFigure hero tone="refuse" value={formatCount(SAMPLE_ROLLUP.refused)} word="Refused">
+            of {formatCount(SAMPLE_ROLLUP.decisions)} decisions in the trailing 24 hours —{" "}
+            {formatPercent(BigInt(SAMPLE_ROLLUP.refused), BigInt(SAMPLE_ROLLUP.decisions))} per
+            cent. Every one is a transaction that reverted: the pool moved shielded value to the
+            gate, the gate read the credential and the policy, and the value went back where it came
+            from.
           </BigFigure>
         </div>
         <Stat
           entries={[
-            {
-              label: "Passed",
-              value: source.live
-                ? formatCount(feed.passes.length)
-                : formatCount(SAMPLE_ROLLUP.passed),
-            },
-            {
-              label: "Decisions 24h",
-              value: source.live ? null : formatCount(SAMPLE_ROLLUP.decisions),
-            },
+            { label: "Passed", value: formatCount(SAMPLE_ROLLUP.passed) },
+            { label: "Decisions 24h", value: formatCount(SAMPLE_ROLLUP.decisions) },
             {
               label: "Refusal rate",
-              value: source.live
-                ? null
-                : formatPercent(BigInt(SAMPLE_ROLLUP.refused), BigInt(SAMPLE_ROLLUP.decisions)),
+              value: formatPercent(BigInt(SAMPLE_ROLLUP.refused), BigInt(SAMPLE_ROLLUP.decisions)),
               unit: "%",
               tone: "refuse",
             },
@@ -179,12 +454,12 @@ export function MonitorScreen() {
           entries={[
             {
               label: "The document failed",
-              value: source.live ? null : formatCount(SAMPLE_ROLLUP.documentFailed),
+              value: formatCount(SAMPLE_ROLLUP.documentFailed),
               unit: "refusals",
             },
             {
               label: "A line was crossed",
-              value: source.live ? null : formatCount(SAMPLE_ROLLUP.linesCrossed),
+              value: formatCount(SAMPLE_ROLLUP.linesCrossed),
               unit: "refusals",
               tone: "refuse",
             },
@@ -290,50 +565,7 @@ export function MonitorScreen() {
         meta="Newest first"
         right="No row names a party — no gate event carries one"
       />
-      <Agate caption="Gate decisions, newest first">
-        <thead>
-          <tr>
-            <th>Time UTC</th>
-            <th className="num">Block</th>
-            <th>Decision</th>
-            <th>Event</th>
-            <th>Policy</th>
-            <th className="num">Amount STRK</th>
-            <th className="num">Epoch</th>
-            <th>Panic code</th>
-            <th>Origin</th>
-            <th>Reference</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.id} data-verdict={row.verdict}>
-              <td>{row.at === null ? <Unavailable /> : formatClock(row.at)}</td>
-              <td className="num">{row.block === null ? <Unavailable /> : formatCount(row.block)}</td>
-              <td className="decision">{row.verdict === "pass" ? "Pass" : "Refused"}</td>
-              <td className="code">{row.kind}</td>
-              <td>{row.policyId}</td>
-              <td className="num amount">
-                {row.amount === null ? <Unavailable /> : formatUnits(row.amount)}
-              </td>
-              <td className="num">
-                {row.epoch === null ? <span className="text-ink-3">—</span> : row.epoch.toString()}
-              </td>
-              <td className="code panic">{row.code ?? <span className="text-ink-3">—</span>}</td>
-              <td className="text-ink-3">{row.origin}</td>
-              <td>
-                {row.reference === null ? (
-                  <Unavailable />
-                ) : row.isHash ? (
-                  <TxRef hash={row.reference} />
-                ) : (
-                  <span className="font-mono">{row.reference}</span>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </Agate>
+      <DecisionsTable rows={rows} />
       <p className="note pt-bl">
         A <em>pass</em> row came from a `PolicyPassed` event the chain published. A{" "}
         <em>refused</em> row came from a receipt, because a panic reverts the whole transaction and
@@ -341,12 +573,6 @@ export function MonitorScreen() {
         rather than a report written afterwards. Neither kind of row carries a subject key: the log
         proves the rules held, not who paid whom.
       </p>
-      {source.live && feed.status === "unavailable" ? (
-        <p className="note pt-tick">
-          The event read did not answer: {feed.error?.message ?? "the node was unreachable"}. The
-          table is empty because nothing was read, not because nothing happened.
-        </p>
-      ) : null}
 
       {/* ── one row, opened up ───────────────────────────────────────── */}
       <SectionHead
@@ -399,4 +625,161 @@ export function MonitorScreen() {
       </section>
     </article>
   );
+}
+
+/* ── pieces ─────────────────────────────────────────────────────────────── */
+
+/** One row of the decisions table, from either record. */
+type DecisionRow = {
+  id: string;
+  at: number | null;
+  block: number | null;
+  verdict: "pass" | "refused";
+  /** A published event, or a receipt. Never both, never blended. */
+  origin: string;
+  kind: string;
+  policyId: string;
+  amount: bigint | null;
+  epoch: bigint | null;
+  code: string | null;
+  reference: string | null;
+  /** True when the reference is a transaction hash rather than an event locator. */
+  isHash: boolean;
+};
+
+/**
+ * The decisions table, which is the one thing the two records genuinely share.
+ *
+ * Whether a reference becomes a link is not decided here: `<TxRef>` asks the record source, so a
+ * sample hash prints and a live one links, and neither component can override the other's rule.
+ */
+function DecisionsTable({ rows }: { rows: readonly DecisionRow[] }) {
+  return (
+    <Agate caption="Gate decisions, newest first">
+      <thead>
+        <tr>
+          <th>Time UTC</th>
+          <th className="num">Block</th>
+          <th>Decision</th>
+          <th>Event</th>
+          <th>Policy</th>
+          <th className="num">Amount STRK</th>
+          <th className="num">Epoch</th>
+          <th>Panic code</th>
+          <th>Origin</th>
+          <th>Reference</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row) => (
+          <tr key={row.id} data-verdict={row.verdict}>
+            <td>{row.at === null ? <Unavailable /> : formatClock(row.at)}</td>
+            <td className="num">{row.block === null ? <Unavailable /> : formatCount(row.block)}</td>
+            <td className="decision">{row.verdict === "pass" ? "Pass" : "Refused"}</td>
+            <td className="code">{row.kind}</td>
+            <td>{row.policyId}</td>
+            <td className="num amount">
+              {row.amount === null ? <Unavailable /> : formatUnits(row.amount)}
+            </td>
+            <td className="num">
+              {row.epoch === null ? <span className="text-ink-3">—</span> : row.epoch.toString()}
+            </td>
+            <td className="code panic">{row.code ?? <span className="text-ink-3">—</span>}</td>
+            <td className="text-ink-3">{row.origin}</td>
+            <td>
+              {row.reference === null ? (
+                <Unavailable />
+              ) : row.isHash ? (
+                <TxRef hash={row.reference} />
+              ) : (
+                <span className="font-mono">{row.reference}</span>
+              )}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </Agate>
+  );
+}
+
+/* ── chain reads ────────────────────────────────────────────────────────── */
+
+/** How the registries stand, as far as the configured ids let anyone see. */
+type RegistryStanding = {
+  /** Published and active, out of the configured ids. Null when a read did not answer. */
+  policies: { inForce: number } | null;
+  /** Active issuers among the ones those policies name. Null when a read did not answer. */
+  issuers: { active: number; named: readonly string[] } | null;
+};
+
+/**
+ * The two figures at the top of the live screen, read rather than assumed.
+ *
+ * A policy that was never published is an answer and counts as not in force; a node that would not
+ * answer is not an answer at all and makes the whole figure unavailable. Keeping those apart is
+ * the difference between "three policies are live" and "three reads came back".
+ */
+function useRegistryStanding(): RegistryStanding {
+  const { provider, registries } = useCordonContext();
+  const [standing, setStanding] = useState<RegistryStanding>({ policies: null, issuers: null });
+
+  useEffect(() => {
+    const policyRegistry = registries?.available ? registries.value.policyRegistry : null;
+    const issuerRegistry = registries?.available ? registries.value.issuerRegistry : null;
+    if (!policyRegistry || !issuerRegistry || CONFIGURED_POLICIES.length === 0) return;
+
+    let cancelled = false;
+    void (async () => {
+      const readings = await Promise.all(
+        CONFIGURED_POLICIES.map((id) => readPolicy(provider, policyRegistry, shortStringToFelt(id)))
+      );
+      const unread = readings.some((reading) => !reading.available && !reading.missing);
+      const published = readings.flatMap((reading) => (reading.available ? [reading.value] : []));
+
+      // Only the issuers those policies actually name. A policy with a zero issuer id takes any
+      // active issuer and names nobody, so it contributes none to check.
+      const named = new Map<string, string>();
+      for (const policy of published) {
+        if (BigInt(policy.issuerId) === 0n) continue;
+        named.set(BigInt(policy.issuerId).toString(), policy.issuerId);
+      }
+      const ids = [...named.values()];
+      const active = await Promise.all(
+        ids.map((id) => readIssuerActive(provider, issuerRegistry, id))
+      );
+      if (cancelled) return;
+
+      setStanding({
+        policies: unread ? null : { inForce: published.filter((entry) => entry.active).length },
+        issuers:
+          unread || ids.length === 0 || active.some((reading) => !reading.available)
+            ? null
+            : {
+                active: active.filter((reading) => reading.available && reading.value).length,
+                named: ids.map((id) => feltToShortString(id) ?? id),
+              },
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [provider, registries]);
+
+  return standing;
+}
+
+/** This session's refusals, tallied by the code that fired, heaviest first. */
+function useCodeTally(
+  refusals: readonly SessionRefusal[]
+): ReadonlyArray<{ refusal: Refusal; count: number }> {
+  return useMemo(() => {
+    const tally = new Map<string, { refusal: Refusal; count: number }>();
+    for (const entry of refusals) {
+      const found = tally.get(entry.refusal.code);
+      if (found) found.count += 1;
+      else tally.set(entry.refusal.code, { refusal: entry.refusal, count: 1 });
+    }
+    return [...tally.values()].sort((a, b) => b.count - a.count);
+  }, [refusals]);
 }
