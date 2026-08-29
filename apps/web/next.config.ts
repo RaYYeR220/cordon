@@ -9,6 +9,11 @@ const nextConfig: NextConfig = {
   // Starknet RPC endpoint and writes go through the user's wallet.
   output: "export",
   images: { unoptimized: true },
+  // GitHub Pages serves a project site from /<repo>, so the build needs to know its
+  // prefix. Empty everywhere else, which keeps `npm run dev` and any root-domain host
+  // working unchanged.
+  basePath: process.env.NEXT_PUBLIC_BASE_PATH || "",
+  assetPrefix: process.env.NEXT_PUBLIC_BASE_PATH || undefined,
   reactStrictMode: true,
   // The app is one workspace inside the repo; without this, tracing walks up
   // past the repo root looking for a lockfile.

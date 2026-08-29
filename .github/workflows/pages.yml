@@ -1,0 +1,57 @@
+name: demo
+
+# The judge-facing demo is a static export, so it builds and publishes from the
+# repository itself. Nothing here depends on a hosting provider's dashboard.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # `npm ci` and not `npm install`: the lockfile records the platform binaries for
+      # linux, macOS and Windows, so a clean install must reproduce exactly.
+      - run: npm ci
+
+      - run: npm run build -w @cordon/web
+        env:
+          NEXT_PUBLIC_BASE_PATH: /cordon
+          NEXT_PUBLIC_STARKNET_RPC_URL: https://api.cartridge.gg/x/starknet/mainnet
+          NEXT_PUBLIC_STRK20_POOL_ADDRESS: "0x040337b1af3c663e86e333bab5a4b28da8d4652a15a69beee2b677776ffe812a"
+          NEXT_PUBLIC_CORDON_GATE_ADDRESS: "0x061c734fe518f4c1a0e46d3d2a35b4ff1ab0df17dec510cff401d25e67dfc6b2"
+          NEXT_PUBLIC_CORDON_POLICY_ID: PAY_ACCREDITED_V1
+          NEXT_PUBLIC_CORDON_PAYEE: "0x031925A2Cb59C0F6156CdFF7A449C6Fe085000B02DA1d388da41de678E3B86de"
+
+      # Pages serves what it is given verbatim; without this, Jekyll drops _next/.
+      - run: touch apps/web/out/.nojekyll
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/web/out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
