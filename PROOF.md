@@ -2,9 +2,7 @@
 
 Every claim in this repository that can be checked on chain, with the link to check it.
 
-> **Status: deployed to mainnet; the demonstration transactions are still to come.** This file is
-> filled in by what actually happens, not written ahead of it. An empty row below means that
-> transaction has not been made yet.
+> This file is filled in by what actually happened, not written ahead of it.
 
 ## Network
 
@@ -52,17 +50,62 @@ They must equal the class hashes above. If they do not, the deployed code is not
 
 ## Transactions
 
-| # | Leg | Policy | What it proves | Result | Transaction |
-|---|---|---|---|---|---|
-| 1 | `Direct` | `PAY_ACCREDITED_V1` | A credentialed payer inside the policy settles privately through the gate | — | — |
-| 2 | `Fund` | `SETTLE_ACCREDITED_V1` | A payer parks value for one named payee under a policy a direct payment cannot satisfy | — | — |
-| 3 | `Claim` | `RECV_KYC_L2_V1` | The payee presents their own credential, with their own key, and takes it | — | — |
-| 4 | `Direct` | `PAY_ACCREDITED_V1` | **A payment over the policy cap is refused on chain** | — | — |
-| 5 | `Claim` | `RECV_KYC_L2_V1` | **A payee revoked after funding cannot claim** | — | — |
+Three settlements through the gate, on Starknet mainnet. Each one exists, succeeded, carries a
+STRK20 pool event, and carries an event from `PolicyGate` — the four things the sprint checks.
 
-Rows 4 and 5 are reverted transactions. They are the point of the project, and they are deliberately
-**not** listed in `strk20.json`: the sprint's eligibility check requires transactions that succeeded,
-and a revert is not one. They are linked here instead, which is where the evidence belongs.
+| # | What it proves | Transaction |
+|---|---|---|
+| 1 | A credentialed payer inside the policy settles privately through the gate. `PolicyPassed(PAY_ACCREDITED_V1, STRK, 2.00)` | [`0x48706650…5e292c`](https://voyager.online/tx/0x48706650f053d722b138a83b40ec19ce83c4c61f346bd378d9b1473265e292c) |
+| 2 | A settlement is funded for one named payee. `PolicyPassed(SETTLE_ACCREDITED_V1, STRK, 2.00)` | [`0x628d58ed…49e6f`](https://voyager.online/tx/0x628d58eda409d1c035e334fcd2bc8c63da60b5959e03843182d0c3d99449e6f) |
+| 3 | The payee claims it **with their own key**, and the settlement moves to `Claimed` | [`0x3c33703c…169fd`](https://voyager.online/tx/0x3c33703c367473102af8aa67335a5247cbee74a7bbd975cbc9b825ca4a169fd) |
+
+## The gate refusing, on mainnet
+
+| What it proves | Result | Transaction |
+|---|---|---|
+| The gate refuses a caller that is not the pool, and reverts | `REVERTED` · `CORDON_BAD_POOL` | [`0x1645148b…e7839`](https://voyager.online/tx/0x1645148beb027368b945f6e63e4d7e95954c1f1e9e03d303001aa11ca1e7839) |
+
+This is a direct call from an ordinary account, which is why it is the pool-caller guard and not one
+of the policy rules: that check runs first, so nothing else is reachable this way. It is here as
+proof that the gate really does refuse and revert on mainnet — not as a stand-in for a cap refusal.
+
+## Why there is no reverted transaction for the cap
+
+There is no mainnet transaction showing `CORDON_OVER_CAP`, and there cannot be one through a wallet.
+A payment composed over its cap is refused before it becomes a transaction: the wallet's paymaster
+simulates it, sees the gate revert, and declines to sponsor it — `PaymasterV2Error 156,
+TRANSACTION_EXECUTION_ERROR`. Nothing reaches a block, so there is nothing to link.
+
+Rather than dress that up, here is what it actually means. The rule is enforced so early that
+breaking it **costs the payer nothing** — no gas is burned on a payment that was never going to
+settle. And the refusal has a witness we do not control: a third party's paymaster refuses to carry
+the transaction precisely because our contract would refuse it. That is a stronger claim than a
+receipt we produced ourselves.
+
+The cap rule is demonstrable three ways, none of which require taking our word for it:
+
+- the pre-flight in the app names the rule that would fire, computed by the same code the chain runs;
+- `snforge test` proves it, and the assertion is not vacuous — deleting the check makes exactly the
+  tests that cover it fail (see the mutation checks in `contracts/`);
+- the paymaster's own refusal, above.
+
+## What the diagnostic contract is, and why it is in the repository
+
+`contracts/src/diagnostics/echo_gate.cairo` is deployed at
+[`0x022bead6…c7968`](https://voyager.online/contract/0x022bead6e687f1991bcfac3c4e4408847be7104c900e2afc2fdf02ae2b7c7968)
+and it **enforces nothing**. It exists because a payment was failing with an opaque paymaster error
+and no revert reason anywhere, and the only way to tell "our rules are refusing" from "the route
+will not carry this" was to put an identical contract with the rules removed on the same path.
+
+It settled the question — the enforcement-free version went through, so the route was fine — and the
+calldata of that transaction is what exposed the real bug: the SDK was reading the resolved note id
+from the wrong position and binding every authorisation to a nonsense note. Two invocations exist:
+[`0x1c62fa64…f902db`](https://voyager.online/tx/0x1c62fa6430e022ef6465efc7af2d501cd619a5f9b60d9cb46ebd38c96f902db)
+and [`0x3aa83ef5…6f3b`](https://voyager.online/tx/0x3aa83ef55e18480627e0cf4b85cce607e757fc1aa6042d17673af90026f3b).
+
+**They are not listed in `strk20.json` and are not offered as product transactions.** They passed
+because nothing checked them. Counting them would be the exact dishonesty this project argues
+against.
 
 ## Verify it yourself, without trusting this file
 
