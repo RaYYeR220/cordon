@@ -264,6 +264,24 @@ export async function readPrivacyPool(
   return felt(await call(provider, gate, "privacy_pool"));
 }
 
+/**
+ * The pool's fee for one `apply_actions`, in the fee token's base units.
+ *
+ * Worth reading rather than pinning. It is charged once per transaction from the shielded balance
+ * — on top of whatever a leg withdraws — so it decides how many actions a balance affords, and a
+ * page that prints a stale constant beside a real balance is doing the user's arithmetic wrong.
+ */
+export async function readPoolFee(
+  provider: ReadProvider,
+  pool: Address,
+): Promise<Reading<bigint>> {
+  const raw = await call(provider, pool, "get_fee_amount");
+  if (!raw.available) return raw;
+  const first = raw.value[0];
+  if (first === undefined) return unavailable(new Error("get_fee_amount answered with nothing"));
+  return available(BigInt(first));
+}
+
 /** The entrypoint selector for a contract function, for callers assembling their own reads. */
 export function selector(name: string): string {
   return hash.getSelectorFromName(name);

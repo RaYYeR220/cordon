@@ -4,6 +4,7 @@ import { useCallback, useEffect, useId, useRef, useMemo, useState } from "react"
 import {
   ConnectWallet,
   parseUnits,
+  readPoolFee,
   useCordonContext,
   useCordonCredential,
   useCordonPolicy,
@@ -81,7 +82,7 @@ const LEGS: ReadonlyArray<{ leg: PaymentLeg; label: string; blurb: string }> = [
 
 export function PayScreen() {
   const source = useRecordSource();
-  const { config, connection } = useCordonContext();
+  const { config, connection, provider } = useCordonContext();
   const ids = useId();
   const [sampleAmount, setSampleAmount] = useState<bigint>(SCENARIOS[2].amount);
   // Strong binding is the default and stays the default. The two modes are not
@@ -101,10 +102,32 @@ export function PayScreen() {
 
   const livePolicyId =
     leg === "direct" ? LIVE_POLICY_ID : leg === "fund" ? LIVE_SETTLE_POLICY_ID : LIVE_CLAIM_POLICY_ID;
+  const legLabel = source.live
+    ? (LEGS.find((entry) => entry.leg === leg)?.label ?? "Direct")
+    : "Direct";
+  // Which actions this leg actually sends. Sample mode always draws the Direct array.
+  const withdraws = !source.live || leg === "direct" || leg === "fund";
+  const fillsNote = !source.live || leg !== "fund";
 
   // The clock ticks as state rather than being read during render, so the claim window a funding
   // signs is the one the page was showing when the button was pressed.
   const liveNow = useNow();
+
+  // The pool's fee is read, not pinned. It comes out of the same shielded balance the withdraw
+  // does, so it is half the arithmetic a payer needs, and a number this screen made up beside a
+  // balance it read would be the worst of both.
+  const [poolFee, setPoolFee] = useState<bigint | null>(null);
+  useEffect(() => {
+    if (!source.live) return;
+    let cancelled = false;
+    void readPoolFee(provider, config.poolAddress).then((reading) => {
+      if (!cancelled) setPoolFee(reading.available ? reading.value : null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [source.live, provider, config.poolAddress]);
+  const fee = source.live ? poolFee : POOL_FEE;
 
   const parsed = useMemo(() => {
     try {
@@ -169,6 +192,18 @@ export function PayScreen() {
   const stopsAt = refusal?.step ?? null;
   const skipped = source.live ? (payment.preflight?.skipped ?? []) : sample.preflight.skipped;
 
+  /**
+   * Whether anything was actually judged.
+   *
+   * Live, with no credential loaded, the pre-flight has nothing to run against and returns
+   * nothing — and a screen that reads "no rule fires" from an absent verdict is worse than one
+   * that reads `unavailable`, because it looks like a green light. So the unassessed case is its
+   * own state everywhere the verdict appears: the ladder, the section head and the panel.
+   */
+  const assessed = source.live
+    ? payment.preflight !== null || payment.refusal !== null || payment.status === "confirmed"
+    : true;
+
   const run = useEnforcementRun({
     stopAt: stopsAt,
     autoRunKey: `${source.mode}:${amount.toString()}:${refusal?.code ?? "clear"}`,
@@ -216,7 +251,7 @@ export function PayScreen() {
         running="Cordon · 01 · Pay"
         title="Compose a gated private payment"
         facts={[
-          { label: "Policy in force", value: source.live ? (livePolicy.label ?? LIVE_POLICY_ID) : SAMPLE_POLICY.id },
+          { label: "Policy in force", value: source.live ? (livePolicy.label ?? livePolicyId) : SAMPLE_POLICY.id },
           {
             label: "Epoch closes",
             value: resetsAt === null || now === null ? null : formatDuration(resetsAt - now),
@@ -401,7 +436,10 @@ export function PayScreen() {
               label="Privacy pool · STRK20"
               value={<ContractRef address={DEFAULT_POOL_ADDRESS} live />}
             />
-            <Row label="Pool fee" value={`${formatUnits(POOL_FEE)} STRK per apply_actions`} />
+            <Row
+              label="Pool fee"
+              value={fee === null ? null : `${formatUnits(fee)} STRK per apply_actions`}
+            />
             <Row
               label="Nonce"
               value={source.live ? "fresh per attempt" : `${SAMPLE_NONCE} · unspent`}
@@ -453,55 +491,66 @@ export function PayScreen() {
         <div className="span2">
           <SectionHead
             title="Transaction shape"
-            right={
-              source.live && leg === "claim"
-                ? "Two actions — nothing is withdrawn"
-                : source.live && leg === "fund"
-                  ? "Two actions — no note is filled"
-                  : "Phases non-decreasing"
-            }
+            right={`${withdraws ? 3 - (leg === "fund" && source.live ? 1 : 0) : 2} actions · phases non-decreasing`}
             level={3}
           />
+          {/*
+            The array a leg actually sends, not a picture of the Direct one. The three differ in
+            ways that matter to a reader: a Fund creates no open note and so has no transfer, and
+            a Claim withdraws nothing at all because the value has been at the gate since the
+            funding — a withdraw there would push in value no leg pays out.
+          */}
           <ol className="form">
+            {withdraws ? (
+              <Action
+                number={1}
+                op="withdraw"
+                detail={
+                  <>
+                    <i className="not-italic text-ink">{formatUnits(amount)} STRK</i>{" "}
+                    from the shielded balance to the gate — exactly the amount the subject signed.
+                    The pool&rsquo;s {fee === null ? "" : `${formatUnits(fee)} STRK `}fee is charged{" "}
+                    <span className="text-ink-3">
+                      separately from the same shielded balance, once per transaction
+                    </span>
+                    ; withdrawing it here would strand it at the gate as dust.
+                  </>
+                }
+              />
+            ) : null}
+            {fillsNote ? (
+              <Action
+                number={withdraws ? 2 : 1}
+                op="transfer"
+                detail={
+                  <>
+                    to <b>&quot;${"{poolAddress}"}&quot;</b> as <b>&quot;OPEN&quot;</b> → note{" "}
+                    <b>&quot;${"{openNoteIds[0]}"}&quot;</b>
+                    {source.live && leg === "claim" ? ", credited to the claimant" : null}
+                  </>
+                }
+              />
+            ) : null}
             <Action
-              number={1}
-              op="withdraw"
-              detail={
-                <>
-                  <i className="not-italic text-ink">{formatUnits(amount)} STRK</i>{" "}
-                  from the shielded balance to the gate — exactly the amount the subject signed.
-                  The pool&rsquo;s {formatUnits(POOL_FEE)} STRK fee is charged{" "}
-                  <span className="text-ink-3">
-                    separately from the same shielded balance, once per transaction
-                  </span>
-                  ; withdrawing it here would strand it at the gate as dust.
-                </>
-              }
-            />
-            <Action
-              number={2}
-              op="transfer"
-              detail={
-                <>
-                  to <b>&quot;${"{poolAddress}"}&quot;</b> as <b>&quot;OPEN&quot;</b> → note{" "}
-                  <b>&quot;${"{openNoteIds[0]}"}&quot;</b>
-                </>
-              }
-            />
-            <Action
-              number={3}
+              number={(withdraws ? 1 : 0) + (fillsNote ? 1 : 0) + 1}
               op="invoke"
               detail={
                 <>
-                  <b>PolicyGate.privacy_invoke(</b>token, pool, note, policy_id=
+                  <b>PolicyGate.privacy_invoke(</b>token, pool,{" "}
+                  {fillsNote ? "note" : <i className="not-italic text-ink">0</i>}, policy_id=
                   <i className="not-italic text-ink">
-                    {source.live ? (LIVE_POLICY_ID ?? "unset") : SAMPLE_POLICY.id}
+                    {source.live ? (livePolicyId ?? "unset") : SAMPLE_POLICY.id}
                   </i>
                   , note_binding=
                   <i className="not-italic text-ink">
-                    {source.live && payment.noteId ? shorten(payment.noteId) : "the resolved note"}
+                    {!fillsNote
+                      ? "0 — this leg fills no note"
+                      : source.live && payment.noteId
+                        ? shorten(payment.noteId)
+                        : "the resolved note"}
                   </i>
-                  , payer=Credential&#123;…&#125;, sig_r, sig_s, nonce<b>)</b>
+                  , {source.live && leg === "claim" ? "payee" : "payer"}=Credential&#123;…&#125;,
+                  sig_r, sig_s, nonce<b>)</b>
                 </>
               }
             />
@@ -514,20 +563,31 @@ export function PayScreen() {
 
           <SectionHead
             title="Enforcement order"
-            meta={`Direct leg · ${STEP_COUNT} steps · fail-closed`}
+            meta={`${legLabel} leg · ${STEP_COUNT} steps · fail-closed`}
             right={
               <span className={stopsAt === null ? "" : "text-red"}>
-                {stopsAt === null ? "Clears the pipeline" : `Stops at ${stopsAt}`}
+                {!assessed
+                  ? "Not assessed"
+                  : stopsAt === null
+                    ? "Clears the pipeline"
+                    : `Stops at ${stopsAt}`}
               </span>
             }
             level={3}
           />
           <ChecksLadder
-            ran={run.ran}
+            ran={assessed ? run.ran : 0}
             failedAt={run.settled || run.ran >= (stopsAt ?? STEP_COUNT) ? stopsAt : null}
             values={stepValues}
             firedCode={refusal?.code ?? null}
           />
+          {!assessed ? (
+            <p className="note pt-tick">
+              Nothing has been judged yet. The pre-flight needs a credential and the chain state it
+              is judged against; until it has both, no rung here has been evaluated and none of
+              them says so.
+            </p>
+          ) : null}
 
           <div className="flex flex-wrap items-baseline justify-between gap-tick pt-bl">
             <div className="flex flex-wrap gap-tick">
@@ -602,7 +662,7 @@ export function PayScreen() {
       {/* ── the cordon line, at hero size ──────────────────────────────── */}
       <SectionHead
         title="The cordon line"
-        meta={`Per-transfer cap · ${source.live ? (livePolicy.label ?? LIVE_POLICY_ID ?? "policy") : SAMPLE_POLICY.id}`}
+        meta={`Per-transfer cap · ${source.live ? (livePolicy.label ?? livePolicyId ?? "policy") : SAMPLE_POLICY.id}`}
         right={`Scale 0 → ${formatUnits(capScale)} STRK`}
       />
       <Rule />
@@ -732,12 +792,20 @@ export function PayScreen() {
       {/* ── the refusal ────────────────────────────────────────────────── */}
       <SectionHead
         title="The verdict"
-        meta={refusal ? `${refusal.code} · step ${refusal.step ?? "—"} of ${STEP_COUNT}` : "No rule fires"}
+        meta={
+          refusal
+            ? `${refusal.code} · step ${refusal.step ?? "—"} of ${STEP_COUNT}`
+            : assessed
+              ? "No rule fires"
+              : "Nothing judged yet"
+        }
         right={
           source.live
             ? payment.transactionHash
               ? "Reverted on Starknet mainnet"
-              : "Predicted before signing"
+              : assessed
+                ? "Predicted before signing"
+                : "Nothing to predict from"
             : "Predicted by the SDK pre-flight"
         }
       />
@@ -775,6 +843,19 @@ export function PayScreen() {
               </p>
             ) : null}
           </>
+        ) : run.settled && !assessed ? (
+          <div className="border border-ink p-bl">
+            <p className="font-display text-sub uppercase tracking-[var(--tracking-label)]">
+              Nothing was judged
+            </p>
+            <p className="lede pt-tick">
+              The pre-flight had nothing to run: {payment.blockers.length
+                ? payment.blockers.map((blocker) => blocker.message.replace(/\.$/, "")).join("; ")
+                : "no credential is loaded"}
+              . That is not a pass and this screen will not draw one — a green light nobody earned
+              is the one thing worse than a refusal.
+            </p>
+          </div>
         ) : run.settled ? (
           <div className="border border-ink p-bl">
             <p className="font-display text-sub uppercase tracking-[var(--tracking-label)] text-green">
