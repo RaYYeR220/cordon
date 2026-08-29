@@ -186,7 +186,10 @@ describe("reads that have to tell 'no' from 'no answer'", () => {
     expect(reading.available).toBe(false);
   });
 
-  it("stops walking pages so a busy gate cannot hang a render", async () => {
+  it("stops walking pages so a busy gate cannot hang a render, and says it did", async () => {
+    // A node returns events oldest first inside the range, so a walk that runs out of pages holds
+    // the OLDEST events and not the newest. Handing those back from a function that promises
+    // "newest first" is a wrong answer, not a short one — so it is reported as unavailable.
     const state = defaultChainState();
     const rpc = makeRpc(state);
     rpc.getEvents.mockResolvedValue({
@@ -194,8 +197,40 @@ describe("reads that have to tell 'no' from 'no answer'", () => {
       continuation_token: "more",
     });
     const reading = await readGateEvents(rpc, GATE, { maxPages: 3 });
-    expect(reading.available).toBe(true);
+    expect(reading.available).toBe(false);
     expect(rpc.getEvents).toHaveBeenCalledTimes(3);
+    if (!reading.available) expect(reading.error.message).toContain("chain head");
+  });
+
+  it("bounds an unpinned range against the head instead of starting at block zero", async () => {
+    // Starting at zero is the failure that looks like success: on a chain with millions of blocks
+    // and a node that pages in fixed windows, the walk never reaches the deployment and returns
+    // an empty list indistinguishable from a gate that has passed nothing.
+    const state = defaultChainState();
+    const rpc = makeRpc(state);
+    await readGateEvents(rpc, GATE, { lookbackBlocks: 1_000 });
+    expect(rpc.getEvents).toHaveBeenCalledWith(
+      expect.objectContaining({ from_block: { block_number: state.blockNumber - 1_000 } }),
+    );
+  });
+
+  it("refuses to guess a range when the provider cannot report a head", async () => {
+    const rpc = makeRpc(defaultChainState());
+    const { getBlockLatestAccepted: _omitted, ...headless } = rpc;
+    const reading = await readGateEvents(headless, GATE);
+    expect(reading.available).toBe(false);
+    if (!reading.available) expect(reading.error.message).toContain("fromBlock");
+    expect(rpc.getEvents).not.toHaveBeenCalled();
+  });
+
+  it("takes a pinned fromBlock without asking for the head", async () => {
+    const rpc = makeRpc(defaultChainState());
+    const reading = await readGateEvents(rpc, GATE, { fromBlock: 1_400_000 });
+    expect(reading.available).toBe(true);
+    expect(rpc.getBlockLatestAccepted).not.toHaveBeenCalled();
+    expect(rpc.getEvents).toHaveBeenCalledWith(
+      expect.objectContaining({ from_block: { block_number: 1_400_000 } }),
+    );
   });
 });
 

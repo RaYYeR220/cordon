@@ -97,6 +97,8 @@ export interface ChainState {
   poolError: Error | null;
   /** The gate's raw ERC20 balance, for the unaccounted-balance read. */
   gateBalance: bigint;
+  /** The chain head an event read bounds its range against. */
+  blockNumber: number;
 }
 
 export function defaultChainState(): ChainState {
@@ -117,6 +119,7 @@ export function defaultChainState(): ChainState {
     pool: POOL,
     poolError: null,
     gateBalance: 0n,
+    blockNumber: 1_482_912,
   };
 }
 
@@ -175,12 +178,16 @@ export function makeRpc(state: ChainState) {
 
   const getChainId = vi.fn(async () => SN_MAIN);
 
+  // Gate-event reads bound their block range against the head, so a provider that cannot report
+  // one has no honest default. The fake answers with a plausible mainnet height.
+  const getBlockLatestAccepted = vi.fn(async () => ({ block_number: state.blockNumber }));
+
   const waitForTransaction = vi.fn(async () => {
     if (state.receiptError) throw state.receiptError;
     return state.receipt;
   });
 
-  return { callContract, getEvents, getChainId, waitForTransaction, state };
+  return { callContract, getEvents, getChainId, getBlockLatestAccepted, waitForTransaction, state };
 }
 
 /**

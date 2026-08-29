@@ -64,8 +64,15 @@ export interface UseGateFeedOptions {
   limit?: number;
   /** Re-read on this interval, in milliseconds. Defaults to 15000; pass 0 to poll never. */
   pollMs?: number;
-  /** Earliest block to read from. Defaults to the whole chain, which nodes will paginate. */
+  /**
+   * Earliest block to read from. Defaults to a window back from the chain head.
+   *
+   * Pin it to the gate's deploy block when you know it: the range is then exact and the read is
+   * one page rather than several.
+   */
   fromBlock?: number;
+  /** Blocks to look back from the head when `fromBlock` is not given. */
+  lookbackBlocks?: number;
   /** Leave the session's own refusals out and show only what the chain says. */
   chainOnly?: boolean;
 }
@@ -85,7 +92,7 @@ export interface UseGateFeed {
 
 export function useGateFeed(options: UseGateFeedOptions = {}): UseGateFeed {
   const { provider, config, refusals: sessionRefusals } = useCordonContext();
-  const { kinds, limit = 25, pollMs = 15000, fromBlock, chainOnly = false } = options;
+  const { kinds, limit = 25, pollMs = 15000, fromBlock, lookbackBlocks, chainOnly = false } = options;
 
   const [events, setEvents] = useState<GateEvent[] | null>(null);
   const [error, setError] = useState<Strk20NormalizedError | null>(null);
@@ -100,6 +107,7 @@ export function useGateFeed(options: UseGateFeedOptions = {}): UseGateFeed {
         limit,
         ...(kindsKey ? { kinds: kindsKey.split(",") as GateEventName[] } : {}),
         ...(fromBlock !== undefined ? { fromBlock } : {}),
+        ...(lookbackBlocks !== undefined ? { lookbackBlocks } : {}),
       });
       if (reading.available) {
         setEvents(reading.value);
@@ -112,7 +120,7 @@ export function useGateFeed(options: UseGateFeedOptions = {}): UseGateFeed {
     } finally {
       setLoading(false);
     }
-  }, [provider, config.gateAddress, limit, kindsKey, fromBlock]);
+  }, [provider, config.gateAddress, limit, kindsKey, fromBlock, lookbackBlocks]);
 
   useEffect(() => {
     void refresh();
