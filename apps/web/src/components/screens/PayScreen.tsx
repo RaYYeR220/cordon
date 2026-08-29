@@ -267,6 +267,7 @@ export function PayScreen() {
 
       {source.live ? <LivePreconditions payment={payment} /> : null}
       {source.live ? <LiveBindingState payment={payment} /> : null}
+      {source.live ? <LiveFailure payment={payment} /> : null}
 
       <section className="grid4 items-start pt-bl">
         {/* ── what is being composed ─────────────────────────────────────── */}
@@ -981,6 +982,59 @@ function LiveBindingState({ payment }: { payment: ReturnType<typeof useGatedPaym
           </div>
         </dl>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * A failure that is not a refusal and not a binding problem.
+ *
+ * A rejected prompt, a wallet that will not submit, a node that will not take
+ * the transaction. None of these are the gate deciding anything, so they must
+ * not be dressed as a refusal — but they must not be silent either. A screen
+ * that swallows a failure is the same defect this product exists to argue
+ * against, one layer up.
+ */
+function LiveFailure({ payment }: { payment: ReturnType<typeof useGatedPayment> }) {
+  const handled =
+    payment.status === "note-drift" ||
+    payment.status === "prepare-failed" ||
+    payment.status === "refused";
+  if (handled || !payment.error) return null;
+
+  const { message, code, revertReason } = payment.error;
+
+  return (
+    <div className="border-y border-red py-tick" role="alert">
+      <p className="font-display text-agate uppercase tracking-[var(--tracking-mega)] text-red">
+        Not submitted
+      </p>
+      <p className="lede pt-tick">
+        The gate refused nothing — this failed before any rule was evaluated, so no policy decided
+        it and nothing reached the chain.
+      </p>
+      <dl className="rows mt-bl">
+        <div className="rw">
+          <dt>Reported</dt>
+          <dd className="v">{message}</dd>
+        </div>
+        {code === undefined || code === null ? null : (
+          <div className="rw">
+            <dt>Code</dt>
+            <dd className="v">{String(code)}</dd>
+          </div>
+        )}
+        {revertReason ? (
+          <div className="rw">
+            <dt>Revert reason</dt>
+            <dd className="v">{revertReason}</dd>
+          </div>
+        ) : null}
+        <div className="rw">
+          <dt>Status</dt>
+          <dd className="v">{payment.status}</dd>
+        </div>
+      </dl>
     </div>
   );
 }
