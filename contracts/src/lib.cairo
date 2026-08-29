@@ -26,6 +26,7 @@
 //! Identities stay private: a credential subject is a `subject_public_key` pseudonym the holder
 //! generates locally, never a wallet address.
 
+pub mod diagnostics;
 pub mod errors;
 pub mod hashing;
 pub mod interfaces;
