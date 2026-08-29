@@ -75,6 +75,7 @@ import {
   readPolicy,
   readRevoked,
   readSettlement,
+  submitActions,
   submitPreparedCall,
   supportsPreparedInvoke,
   voyagerTxUrl,
@@ -571,17 +572,34 @@ export function useGatedPayment(options: UseGatedPaymentOptions = {}): UseGatedP
         setNoteId(prepared.noteId);
 
         setStatus("awaiting-signature");
-        const outcome = await submitPreparedCall(
+        const onSubmitted = (hash: string): void => {
+          setTransactionHash(hash);
+          setStatus("submitted");
+        };
+
+        let outcome = await submitPreparedCall(
           account,
           provider,
           { call: prepared.call, proof: prepared.proof },
-          {
-            onSubmitted: (hash) => {
-              setTransactionHash(hash);
-              setStatus("submitted");
-            },
-          },
+          { onSubmitted },
         );
+
+        // Some wallets accept the STRK20 methods but refuse a prepared call carrying a proof,
+        // rejecting the payload at their own validation layer before anything is signed
+        // (`INVALID_REQUEST_PAYLOAD`, 114). Ready X does this today. The same actions submit
+        // through the wallet's own route, where it prepares and submits for itself.
+        //
+        // This is a change of transport, not of what was authorised: the actions carry the
+        // authorisation the subject already signed, and that authorisation still names the one
+        // note it may fill. If the wallet resolves a different note than the one we prepared
+        // against, the gate refuses with CORDON_NOTE_MISMATCH — the payment fails closed rather
+        // than landing somewhere nobody signed for.
+        if (!outcome.ok && outcome.error.name === "INVALID_REQUEST_PAYLOAD") {
+          outcome = await submitActions(account, provider, prepared.actions, {
+            onSubmitted,
+            skipValidation: true,
+          });
+        }
 
 
         if (!outcome.ok) {
