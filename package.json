@@ -17,5 +17,12 @@
     "typecheck": "npm run typecheck -w @cordon/sdk && npm run typecheck -w @cordon/react && npm run typecheck -w @cordon/web && npm run typecheck -w @cordon/issuer",
     "dev": "npm run dev -w @cordon/web",
     "postinstall": "npm run build -w @cordon/sdk && npm run build -w @cordon/react"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-darwin-arm64": "^4.63.0",
+    "@rollup/rollup-darwin-x64": "^4.63.0",
+    "@rollup/rollup-linux-arm64-gnu": "^4.63.0",
+    "@rollup/rollup-linux-x64-gnu": "^4.63.0",
+    "@rollup/rollup-win32-x64-msvc": "^4.63.0"
   }
 }
