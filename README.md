@@ -2,6 +2,8 @@
 
 **Compliance the pool can't settle around.**
 
+**[Watch the three-minute demo](https://youtu.be/xEIzchhd8QU)** · **[Open the live record](https://rayyer220.github.io/cordon/)** — no wallet, no account, no faucet.
+
 Cordon is a credential and policy layer for [STRK20](https://strk20.starknet.io/), Starknet's
 privacy pool. Value physically routes through a Cairo anonymizer, so a payer who is uncredentialed,
 revoked, over their amount cap or over their per-epoch velocity limit **cannot move shielded funds
@@ -126,17 +128,18 @@ on-chain to the account that funded it.
 ```bash
 git clone https://github.com/RaYYeR220/cordon && cd cordon
 
-# contracts
-cd contracts && scarb build && snforge test
+npm install          # one install for the whole workspace; it builds the libraries in order
+npm test             # SDK, React package and issuer service
+npm run dev          # the app, on http://localhost:3000
 
-# sdk
-cd ../packages/sdk && npm install && npm test
-
-# app
-cd ../../apps/web && npm install && cp .env.example .env.local && npm run dev
+cd contracts && scarb build && snforge test    # the Cairo side
 ```
 
-Requires [Scarb](https://docs.swmansion.com/scarb/) 2.18.0, [Starknet Foundry](https://foundry-rs.github.io/starknet-foundry/) 0.63.0 and Node 20+.
+Requires [Scarb](https://docs.swmansion.com/scarb/) 2.18.0,
+[Starknet Foundry](https://foundry-rs.github.io/starknet-foundry/) 0.63.0 and Node 20+.
+
+The app reads mainnet out of the box and needs no key. Copy `apps/web/.env.example` to
+`.env.local` only if you want to point it somewhere else.
 
 ### Gate your own flow
 
@@ -153,8 +156,14 @@ user sees which rule fired.
 
 ## Deployments
 
-Starknet mainnet addresses, the verified transactions and the reproduction steps are in
-[`PROOF.md`](./PROOF.md). Every claim in this README that can be checked on-chain is linked there.
+`PolicyGate` is live on Starknet mainnet at
+[`0x061c734f…dfc6b2`](https://voyager.online/contract/0x061c734fe518f4c1a0e46d3d2a35b4ff1ab0df17dec510cff401d25e67dfc6b2),
+wired to the STRK20 pool, and it has settled real value: three transactions, each carrying a
+`PolicyPassed` event, listed in [`strk20.json`](./strk20.json) and checkable with
+`node scripts/verify-onchain.mjs`.
+
+Every address, every transaction and the reproduction steps are in [`PROOF.md`](./PROOF.md) —
+including the refusal we could **not** put on chain, and why.
 
 ## Documentation
 
