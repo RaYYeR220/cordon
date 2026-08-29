@@ -3,9 +3,14 @@
 /**
  * Which record is on the page: the seeded sample, or the chain.
  *
- * The two are never blended and never ambiguous. Sample mode is the default,
- * because a judge arrives with no wallet and still has to be able to read the
- * whole product; every screen rendered from it carries a SAMPLE RECORD stamp
+ * The two are never blended and never ambiguous. **Live is the default** once a
+ * gate is configured: the gate has settled real value on mainnet, so the chain
+ * has something to show, and a product that claims to work on mainnet should
+ * open on mainnet rather than on a drawing of itself.
+ *
+ * Sample mode stays one click away and is what this defaulted to while nothing
+ * had passed through the gate yet — an empty live feed reads worse than a
+ * labelled sample. Every screen rendered from it carries a SAMPLE RECORD stamp
  * and prints sample transaction hashes rather than linking them, since a link
  * to a transaction that does not exist is worse than no link.
  *
@@ -45,17 +50,19 @@ export function RecordSourceProvider({
   gateConfigured: boolean;
   children: ReactNode;
 }) {
-  // Always "sample" for the first paint so the server and the client agree; a
-  // stored preference is applied in an effect.
+  // Always "sample" for the first paint so the server and the client agree; the
+  // real default, and any stored preference, are applied in an effect.
   const [mode, setModeState] = useState<RecordMode>("sample");
 
   useEffect(() => {
     if (!gateConfigured) return;
     const frame = window.requestAnimationFrame(() => {
       try {
-        if (window.localStorage.getItem(STORAGE_KEY) === "live") setModeState("live");
+        // Live unless this browser has explicitly chosen otherwise.
+        setModeState(window.localStorage.getItem(STORAGE_KEY) === "sample" ? "sample" : "live");
       } catch {
-        // A browser that refuses storage simply gets the default.
+        // A browser that refuses storage still gets the live record.
+        setModeState("live");
       }
     });
     return () => window.cancelAnimationFrame(frame);
