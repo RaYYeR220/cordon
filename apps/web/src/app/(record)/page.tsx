@@ -66,10 +66,15 @@ export default function CoverPage() {
         </div>
       </div>
 
+      {/*
+        A legend, not a reading. The numbers are round on purpose and name no published policy,
+        because the cover is the one page in the record that is neither the sample nor the chain —
+        it is the key to the figure every other page draws from real values.
+      */}
       <SectionHead
         title="The device"
         meta="Learn it once, read it everywhere"
-        right="Per-transfer cap · ACCREDITED_SEED_V2"
+        right="A legend — round numbers, no policy"
       />
       <Rule />
       <CordonLine
