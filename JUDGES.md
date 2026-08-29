@@ -9,14 +9,25 @@ Cordon puts compliance rules *inside* the settlement path of Starknet's STRK20 p
 routes through a Cairo anonymizer, so a payer who is uncredentialed, revoked, over their cap or over
 their velocity budget cannot move shielded funds at all. The payer and payee stay private.
 
-## 2 · Watch it refuse (60 seconds)
+## 2 · Sixty seconds (no wallet, no account, no faucet)
 
-The demo is open, needs no wallet, no account and no funds to look at, and no faucet.
+**Live demo:** https://rayyer220.github.io/cordon/
 
-- **Live demo:** see the repository's Website field
-- **The money shot:** [`PROOF.md`](./PROOF.md) rows 4 and 5 — two *reverted* mainnet transactions:
-  a payment over the policy cap, and a payee revoked between funding and claiming. Both are real
-  failures on Starknet mainnet, linked to Voyager.
+Three settlements on Starknet mainnet, each carrying a `PolicyPassed` event from our gate:
+
+| | |
+|---|---|
+| a gated payment under a published policy | [`0x48706650…5e292c`](https://voyager.online/tx/0x48706650f053d722b138a83b40ec19ce83c4c61f346bd378d9b1473265e292c) |
+| a settlement funded for one named payee | [`0x628d58ed…49e6f`](https://voyager.online/tx/0x628d58eda409d1c035e334fcd2bc8c63da60b5959e03843182d0c3d99449e6f) |
+| the payee claiming it **with their own key** | [`0x3c33703c…169fd`](https://voyager.online/tx/0x3c33703c367473102af8aa67335a5247cbee74a7bbd975cbc9b825ca4a169fd) |
+
+And the gate refusing, reverted on mainnet:
+[`0x1645148b…e7839`](https://voyager.online/tx/0x1645148beb027368b945f6e63e4d7e95954c1f1e9e03d303001aa11ca1e7839) — `CORDON_BAD_POOL`.
+
+**Read [`PROOF.md`](./PROOF.md) for the refusal we could *not* put on chain, and why.** A payment
+over its cap never becomes a transaction: the wallet's paymaster simulates it, sees the gate revert
+and declines to sponsor it. We would rather explain that than substitute a different refusal and let
+it read as the one we promised.
 
 Connecting a wallet is only needed to send your own payment, and requires **Ready** — it is
 currently the only Starknet wallet implementing the STRK20 methods. The app detects this and says
