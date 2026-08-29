@@ -27,11 +27,35 @@ Every one of those answers `unavailable`, and every one is recorded.
 
 ## What it attests, and what it does not
 
-One claim: `NOT_SANCTIONED`. That is the only thing this service has a real source for, so it is
-the only thing it will sign. It does not issue `ACCREDITED` or `KYC_L2` — those need a different
-issuer with a different source of truth, registered under a different issuer id.
+One claim comes with evidence: `NOT_SANCTIONED`. That is the only thing this service has a source
+it can check for itself, and the only one it will sign on nobody's authority but the Treasury's.
 
-Two honest limits, stated because they matter:
+A deployment can also be configured to attest claims it has **no** source for — `ACCREDITED`,
+`KYC_L2`, whatever a gate's policies ask for — and the difference between the two is the point of
+the design rather than a footnote:
+
+| | `NOT_SANCTIONED` | anything in `ISSUER_ATTESTED_CLAIMS` |
+| --- | --- | --- |
+| evidence | `ofac-screen` | `operator-attestation` |
+| what happens | the lists are fetched and the address is screened | nothing is screened |
+| needs the admin token | no | **yes** |
+| needs a written `basis` | no | **yes**, recorded verbatim |
+| stored against the credential | the screening, with its provenance | the operator's basis and the time |
+| what it is worth | what the check was worth | what the operator's word is worth |
+
+`ISSUER_ATTESTED_CLAIMS` is empty by default, so a service brought up with only a signing key can
+do nothing but screen. The two paths are separate functions taking different arguments — `issue`
+takes a `Screening` and cannot be reached without one, `attest` takes no screening at all — so
+nothing can drift into attaching a screening record to a credential that was never screened. A
+test asserts the attested path cannot reach the OFAC code even when a caller sends an address.
+
+The alternative was to leave those claims to a second issuer under a second id, which is cleaner in
+principle and is still the right answer in production. It is not the right answer for a service
+somebody has to run to demonstrate a gate: it would mean a second key, a second registration and a
+second deployment to assert something a human decided anyway. What matters is that the register
+never implies a check that did not happen, and it does not.
+
+Two honest limits on the screened claim, stated because they matter:
 
 - **OFAC lists no Starknet addresses today.** The 1,007 digital-currency addresses on the current
   SDN list are filed under 20 assets — `XBT`, `ETH`, `TRX`, `USDT`, `SOL` and others — and `STRK`
@@ -60,7 +84,15 @@ npm run refresh           # optional: warm the sanctions cache and print its pro
 npm run dev               # or: npm run build && npm start
 ```
 
-The SDK is a workspace dependency (`file:../../packages/sdk`) and builds itself on install.
+`.env` is read by Node itself (`--env-file-if-exists`), so a missing one is not an error — the
+service falls back to the ambient environment and, failing that, exits with a message naming what
+it needed. The SDK is a workspace dependency (`file:../../packages/sdk`) and builds itself on
+install.
+
+Nothing reaches this service from a browser until `ISSUER_ALLOWED_ORIGINS` names an origin. That
+default is deliberate: the process holds an attesting key, and the only thing worse than a console
+that cannot reach it is a page on any origin that can. The allowlist is exact — no wildcard, no
+reflecting whatever `Origin` arrived, and no credentials.
 
 `npm run refresh` prints exactly what was fetched, which is what you want in front of an audience:
 
@@ -88,7 +120,7 @@ fetched 2026-08-26T21:20:11.029Z
 
 | Method | Path | What it does |
 | --- | --- | --- |
-| `GET` | `/issuer` | The four arguments a registry owner needs for `register_issuer` |
+| `GET` | `/issuer` | The four arguments a registry owner needs for `register_issuer`, and the claim catalogue |
 | `GET` | `/health` | Whether the sanctions snapshot is fresh enough to issue against. 503 when it is not |
 | `POST` | `/credentials` | Screen an address, then sign or refuse |
 | `GET` | `/credentials` | Every credential issued, with the screening that justified it |
@@ -103,6 +135,18 @@ fetched 2026-08-26T21:20:11.029Z
 curl -X POST localhost:8787/credentials -H 'content-type: application/json' -d '{
   "subjectPublicKey": "0x1ce8adcb0d0e5e0d0a3e2b8b8f9e5c3b2a1908070605040302010f0e0d0c0b0",
   "address": "0x0511f0e5d0ce2b0b1e1a3d4c5b6a79887766554433221100ffeeddccbbaa9988"
+}'
+```
+
+Add `"claim"` to ask for something other than `NOT_SANCTIONED`. An attested claim takes a `basis`
+and the admin token instead of an `address`:
+
+```sh
+curl -X POST localhost:8787/credentials   -H 'content-type: application/json' -H 'authorization: Bearer $ISSUER_ADMIN_TOKEN' -d '{
+  "subjectPublicKey": "0x1ce8adcb0d0e5e0d0a3e2b8b8f9e5c3b2a1908070605040302010f0e0d0c0b0",
+  "claim": "ACCREDITED",
+  "credentialId": "0x50415945525f4143435f31",
+  "basis": "Reg D questionnaire, reviewed 2026-08-29"
 }'
 ```
 

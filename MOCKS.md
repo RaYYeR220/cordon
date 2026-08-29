@@ -19,7 +19,7 @@ explicitly. If something below is simulated, it says so and it says why.
 | Component | What is simulated | Why |
 |---|---|---|
 | **The issuer's identity** | We operate the issuer ourselves. A real deployment would have a licensed KYC or accreditation provider hold that key. | Nobody licenses an attestation authority over a weekend. The *mechanism* — issuer registry, signature verification, revocation — is real and is what the gate enforces. |
-| **The accreditation claim** | `ACCREDITED` is attested by us, not by a broker-dealer. | Same reason. `NOT_SANCTIONED` is **not** in this row: that one is screened against real OFAC data. |
+| **The accreditation claim** | `ACCREDITED` and `KYC_L2` are attested by us, not by a broker-dealer or a KYC provider. | Same reason. `NOT_SANCTIONED` is **not** in this row: that one is screened against real OFAC data. The distinction is not left to this table — the issuer service records each credential with the evidence behind it, `ofac-screen` or `operator-attestation`, refuses to attest anything in the second category without the admin token and a written basis, and cannot reach the screening code from that path at all. `GET /issuer` publishes which is which. |
 | **Policy parameters** | The demo policy's cap and epoch length are chosen to make the limits visible inside a three-minute video. | A realistic cap would take days to breach. The enforcement is identical at any parameter. |
 
 ## Not claimed
