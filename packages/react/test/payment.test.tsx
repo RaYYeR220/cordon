@@ -26,12 +26,15 @@ import {
   GatedPaymentButton,
   type UseGatedPaymentOptions,
 } from "../src/index.js";
+import { num } from "starknet";
+
 import {
   GATE,
   ISSUER_REGISTRY,
   ONE_STRK,
   PAYEE,
   POLICY_REGISTRY,
+  POOL,
   REVOCATION_REGISTRY,
   TOKEN,
   defaultChainState,
@@ -97,17 +100,68 @@ vi.mock("../src/strk20/wallet.js", async (importOriginal) => {
 
 const NOTE_ID = "0x6e6f74655f30";
 const OTHER_NOTE_ID = "0x6e6f74655f31";
+/** What sits after the invoke in the envelope. The old reader bound to exactly this. */
+const TRAILING_JUNK = "0x1";
 
 /**
- * Stand in for the wallet's `strk20PrepareInvoke`: substitute the note-id placeholder in the gate
- * invoke's calldata, exactly where the real wallet does — the last felt.
+ * Stand in for the wallet's `strk20PrepareInvoke`.
+ *
+ * The shape here is the whole point. `strk20PrepareInvoke` does **not** hand back our
+ * `privacy_invoke`; it hands back the pool's own `apply_actions` transaction with our invoke
+ * nested inside it, among the withdraw and transfer actions. On the real mainnet transaction the
+ * gate invoke starts at index 85 of 111 felts and the note id sits at 104, with eleven unrelated
+ * felts after it — so a stub that returned the bare invoke, or that let the reader take the last
+ * felt, would agree with a bug rather than catch one.
+ *
+ * Three things this deliberately reproduces:
+ *
+ * - **Decoy gate addresses.** The gate appears three times in the real calldata, because it is
+ *   also the withdraw recipient. Only one occurrence is followed by the right calldata length and
+ *   the right token and pool, so the decoys prove the shape match is doing the work.
+ * - **A decoy with the right length too**, whose token and pool slots hold something else — that
+ *   is what makes the token/pool half of the match load-bearing rather than decorative.
+ * - **Trailing felts after the invoke.** Reading the end of the array lands on `0x1`, which is
+ *   exactly the junk the old reader bound to.
+ *
+ * Both placeholders are substituted, as a real wallet does — the mainnet fixture has the pool
+ * resolved at index 103.
  */
 function preparedFrom(actions: Array<Record<string, unknown>>, noteId: string) {
   const invoke = actions.find((action) => action["type"] === "invoke");
-  const calldata = [...((invoke?.["calldata"] as string[]) ?? [])];
-  if (calldata.length > 0) calldata[calldata.length - 1] = noteId;
+  const resolved = ((invoke?.["calldata"] as string[]) ?? []).map((item) => {
+    if (item === "${openNoteIds[0]}") return noteId;
+    if (item === "${poolAddress}") return POOL;
+    return item;
+  });
+  const length = num.toHex(resolved.length);
+
   return {
-    call: { contractAddress: GATE, entrypoint: "privacy_invoke", calldata },
+    call: {
+      contractAddress: POOL,
+      entrypoint: "apply_actions",
+      calldata: [
+        // Pool actions. The gate turns up twice as a withdraw recipient, as it does on mainnet.
+        "0x2",
+        TOKEN,
+        GATE,
+        "0x53444835ec580000",
+        TOKEN,
+        GATE,
+        "0x0",
+        // A third gate occurrence, this one followed by the *right* length but the wrong token and
+        // pool in the two slots before its note id. Only the full shape rules it out.
+        GATE,
+        length,
+        ...Array.from({ length: resolved.length }, () => "0x7"),
+        // The real invoke: gate, length, then the resolved calldata.
+        GATE,
+        length,
+        ...resolved,
+        // Trailing felts. `calldata.at(-1)` lands here, not on the note id.
+        TRAILING_JUNK,
+        "0x0",
+      ],
+    },
     proof: { data: ["0xproof"] },
   };
 }
@@ -328,9 +382,14 @@ describe("the note the authorisation is bound to", () => {
     // Two prepares: one to learn the note id, one with the real signature bound to it.
     expect(mocks.prepare).toHaveBeenCalledTimes(2);
 
-    const submitted = mocks.execute.mock.calls[0]?.[0] as { calldata: string[] };
-    expect(submitted.calldata.at(-1)).toBe(NOTE_ID);
+    // Assert the binding, not a position. The note id lives inside the nested invoke, and the
+    // prepared call ends with unrelated felts — reading either end is how this went wrong before.
     expect(screen.getByText(new RegExp(`Only note ${NOTE_ID}`))).toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(`Only note ${TRAILING_JUNK}\b`))).not.toBeInTheDocument();
+
+    const submitted = mocks.execute.mock.calls[0]?.[0] as { calldata: string[] };
+    expect(submitted.calldata).toContain(NOTE_ID);
+    expect(submitted.calldata.at(-1)).not.toBe(NOTE_ID);
   });
 
   it("fails closed when the note moves between the two prepares", async () => {
@@ -360,8 +419,85 @@ describe("the note the authorisation is bound to", () => {
     await user.click(screen.getByRole("button", { name: "Try again" }));
 
     await waitFor(() => expect(mocks.execute).toHaveBeenCalledTimes(1));
+    expect(screen.getByText(new RegExp(`Only note ${OTHER_NOTE_ID}`))).toBeInTheDocument();
+  });
+
+  it("is exercised against an envelope that really does hide the invoke", async () => {
+    // Guards the stub itself. If a later change flattens this back to a bare invoke, or drops the
+    // decoy gate addresses, the tests above would start passing for the wrong reason — they would
+    // agree with the bug instead of catching it.
+    render(<Harness chain={defaultChainState()} amount={10n * ONE_STRK} />);
+    await connectAndPay();
+    await waitFor(() => expect(mocks.execute).toHaveBeenCalledTimes(1));
+
     const submitted = mocks.execute.mock.calls[0]?.[0] as { calldata: string[] };
-    expect(submitted.calldata.at(-1)).toBe(OTHER_NOTE_ID);
+    const gateOccurrences = submitted.calldata.filter(
+      (felt) => BigInt(felt) === BigInt(GATE),
+    ).length;
+    // Four: the three mainnet has (twice as a withdraw recipient, once as the invoked contract),
+    // plus the decoy carrying the right calldata length but the wrong token and pool. One more
+    // than reality, on purpose — it is the one that proves the length check alone is not enough.
+    expect(gateOccurrences).toBe(4);
+    // The note id is buried, not at either end.
+    const noteIndex = submitted.calldata.indexOf(NOTE_ID);
+    expect(noteIndex).toBeGreaterThan(0);
+    expect(noteIndex).toBeLessThan(submitted.calldata.length - 1);
+  });
+
+  /**
+   * The regression that cost an afternoon.
+   *
+   * `strk20PrepareInvoke` returns the pool's transaction with our invoke nested inside, so the
+   * final felt of the prepared call is not the note id — it is whatever the pool put there. A
+   * reader that took the last felt bound the authorisation to that junk, and the gate refused
+   * every payment with CORDON_NOTE_MISMATCH.
+   *
+   * The nastiest version is the one below: junk that *looks* like a note id, so a naive reader
+   * fails silently rather than loudly. The only acceptable outcomes are binding the real note or
+   * failing outright. Signing the junk is never one of them.
+   */
+  it("binds the nested note id, never the felt that happens to be last", async () => {
+    // Trailing junk shaped exactly like a note id, so nothing about it looks wrong.
+    const decoyNote = "0x6e6f74655f39";
+    mocks.prepare.mockImplementation(async (actions: Array<Record<string, unknown>>) => {
+      const prepared = preparedFrom(actions, NOTE_ID);
+      prepared.call.calldata[prepared.call.calldata.length - 1] = decoyNote;
+      return prepared;
+    });
+
+    render(<Harness chain={defaultChainState()} amount={10n * ONE_STRK} />);
+    await connectAndPay();
+
+    await waitFor(() => expect(mocks.execute).toHaveBeenCalledTimes(1));
+    const submitted = mocks.execute.mock.calls[0]?.[0] as { calldata: string[] };
+    expect(submitted.calldata.at(-1)).toBe(decoyNote);
+
+    // Bound to the note inside the invoke, not to the one sitting at the end of the array.
+    expect(screen.getByText(new RegExp(`Only note ${NOTE_ID}`))).toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(`Only note ${decoyNote}`))).not.toBeInTheDocument();
+  });
+
+  it("fails rather than guessing when the invoke is not in the prepared call at all", async () => {
+    // A prepared call that is not the transaction this package built: plausible felts, no gate
+    // invoke among them. There is no note id to read, and inventing one would be the same bug.
+    mocks.prepare.mockImplementation(async () => ({
+      call: {
+        contractAddress: POOL,
+        entrypoint: "apply_actions",
+        calldata: ["0x2", TOKEN, "0x53444835ec580000", "0x0", NOTE_ID],
+      },
+      proof: { data: ["0xproof"] },
+    }));
+
+    render(<Harness chain={defaultChainState()} amount={10n * ONE_STRK} />);
+    await connectAndPay();
+
+    await waitFor(() =>
+      expect(screen.getByText(/could not find this SDK's privacy_invoke/)).toBeInTheDocument(),
+    );
+    expect(mocks.execute).not.toHaveBeenCalled();
+    // No binding was formed, so nothing claims a note.
+    expect(screen.queryByText(/^Only note/)).not.toBeInTheDocument();
   });
 
   it("blocks a wallet with no strk20PrepareInvoke before anything is attempted", async () => {
