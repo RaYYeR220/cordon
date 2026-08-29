@@ -140,6 +140,47 @@ describe("preflight", () => {
     expect(result.refusals.map((refusal) => refusal.code)).toContain("CORDON_PAYEE_REQUIRED");
   });
 
+  it("does not refuse a Fund for the want of a payee credential", () => {
+    // `PolicyGate::_direct` is the only leg that asserts `require_payee_credential`, because it is
+    // the only one that carries no payee credential. Fund/Claim is the flow such a policy exists
+    // for — the payee authenticates themselves later, with their own key — so predicting the
+    // refusal here would stop a settlement the chain would have accepted, and the caller would
+    // have no way to tell a real refusal from this one.
+    const payeePolicy = createPolicy({
+      requiredClaim: "ACCREDITED",
+      requirePayeeCredential: true,
+    });
+    for (const leg of ["Fund", "Claim", "Refund"] as const) {
+      const result = preflight({
+        policy: payeePolicy,
+        credential,
+        amount: 400n,
+        leg,
+        ...chainState,
+      });
+      expect(result.refusals.map((refusal) => refusal.code)).not.toContain(
+        "CORDON_PAYEE_REQUIRED",
+      );
+      expect(result.allowed).toBe(true);
+    }
+  });
+
+  it("defaults to Direct, so an unstated leg is judged the strictest way", () => {
+    const payeePolicy = createPolicy({
+      requiredClaim: "ACCREDITED",
+      requirePayeeCredential: true,
+    });
+    const stated = preflight({
+      policy: payeePolicy,
+      credential,
+      amount: 400n,
+      leg: "Direct",
+      ...chainState,
+    });
+    const unstated = preflight({ policy: payeePolicy, credential, amount: 400n, ...chainState });
+    expect(unstated.refusals.map((r) => r.code)).toEqual(stated.refusals.map((r) => r.code));
+  });
+
   it("names the issuer when the policy pins a different one", () => {
     const pinned = createPolicy({ requiredClaim: "ACCREDITED", issuerId: "OTHER_KYC" });
     const result = preflight({ policy: pinned, credential, amount: 400n, ...chainState });

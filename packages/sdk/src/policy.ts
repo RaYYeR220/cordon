@@ -21,6 +21,7 @@ import {
   type FeltLike,
 } from "./felt.js";
 import { validateCredential, type Credential } from "./credential.js";
+import type { Leg } from "./hashing.js";
 import { refusalForCode, type Refusal } from "./refusals.js";
 
 /** A published rule set. Mirrors the Cairo `Policy` struct, field for field and in order. */
@@ -202,6 +203,17 @@ export interface PreflightInput {
   epochSpend?: FeltLike;
   /** Unix seconds to judge expiry and the epoch against. Defaults to now. */
   now?: number;
+  /**
+   * Which leg is being attempted. Defaults to `Direct`.
+   *
+   * It matters for exactly one rule, and getting it wrong turns a working flow into a refusal
+   * nobody can explain. `require_payee_credential` is enforced on `Direct` alone, because a direct
+   * payment carries no payee credential and a policy demanding one cannot be satisfied there. On a
+   * `Fund` that same policy is the whole point — the payee authenticates themselves later, with
+   * their own key, when they claim — so predicting `CORDON_PAYEE_REQUIRED` for it would stop a
+   * settlement the gate would have accepted.
+   */
+  leg?: Leg;
 }
 
 /** What the gate would do, as far as can be worked out off chain. */
@@ -251,7 +263,11 @@ export function preflight(input: PreflightInput): Preflight {
   } else if (toBigInt(policy.token) !== 0n) {
     skipped.push("the policy's token pin (no token given)");
   }
-  if (policy.requirePayeeCredential) refuse("CORDON_PAYEE_REQUIRED");
+  // Only `Direct` carries no payee credential, so only `Direct` can fail for the want of one.
+  // See `PolicyGate::_direct`, which is the only leg that asserts it.
+  if (policy.requirePayeeCredential && (input.leg ?? "Direct") === "Direct") {
+    refuse("CORDON_PAYEE_REQUIRED");
+  }
 
   // 3. There is value, and the gate can back it. The amount is signed, not inferred from a
   //    balance, so what matters is whether the gate holds at least that much above its ledger.

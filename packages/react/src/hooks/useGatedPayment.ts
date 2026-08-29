@@ -57,6 +57,7 @@ import {
   type Felt,
   type FeltLike,
   type GateAuthorization,
+  type Leg,
   type Preflight,
   type PreparedGateTransaction,
   type Refusal,
@@ -83,6 +84,14 @@ import {
 
 /** Which leg of `privacy_invoke` to run. */
 export type PaymentLeg = "direct" | "fund" | "claim" | "refund";
+
+/** This hook's lower-case leg names, as the SDK spells them. */
+const LEG_NAMES: Readonly<Record<PaymentLeg, Leg>> = {
+  direct: "Direct",
+  fund: "Fund",
+  claim: "Claim",
+  refund: "Refund",
+};
 
 /**
  * Where a payment is.
@@ -457,6 +466,7 @@ export function useGatedPayment(options: UseGatedPaymentOptions = {}): UseGatedP
             gate,
             provider,
             registries: registryAddresses,
+            leg: LEG_NAMES[currentLeg],
           });
           setPreflightResult(flight);
           if (flight.refusal && !payOptions.force) {
@@ -678,8 +688,9 @@ async function buildPreflight(params: {
   gate: string;
   provider: Parameters<typeof readPolicy>[0];
   registries: { issuerRegistry: string; revocationRegistry: string; policyRegistry: string };
+  leg: Leg;
 }): Promise<Preflight> {
-  const { credential, policyId, amount, token, gate, provider, registries } = params;
+  const { credential, policyId, amount, token, gate, provider, registries, leg } = params;
 
   const policyReading = await readPolicy(provider, registries.policyRegistry, policyId);
   if (!policyReading.available) {
@@ -735,6 +746,7 @@ async function buildPreflight(params: {
     credential,
     amount,
     token,
+    leg,
     ...(issuerKey.available ? { issuerPublicKey: issuerKey.value } : {}),
     ...(issuerActive.available ? { issuerActive: issuerActive.value } : {}),
     ...(revoked.available
