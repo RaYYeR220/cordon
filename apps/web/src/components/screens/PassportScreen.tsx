@@ -363,12 +363,20 @@ export function PassportScreen() {
       <SectionHead
         title="Your own passport"
         meta={source.live ? "Read from the chain" : "Nothing is loaded in sample mode"}
-        right="Paste a credential, or derive a pseudonym from your wallet"
+        right="Derive a pseudonym from your wallet, then load the credential issued for it"
       />
       <Rule weight="thin" />
       <div className="pt-bl max-w-[72ch]">
-        <PassportCard credential={credential} allowImport title={null} />
+        <PassportCard credential={credential} allowDerive allowImport title={null} />
       </div>
+      <p className="note pt-bl max-w-[74ch]">
+        The pseudonym comes first and everything else follows from it. It is derived from one wallet
+        signature over a fixed message — nothing is spent, and the same wallet always produces the
+        same key — and it is what an issuer attests, what the gate books velocity against, and what
+        signs a settlement. It is not a wallet address and reveals nothing about one. Hand it to the
+        Issuer console, and paste the credential that comes back into the box above; the Pay screen
+        reads both from here.
+      </p>
     </article>
   );
 }

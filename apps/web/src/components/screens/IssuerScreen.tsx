@@ -2,6 +2,7 @@
 
 import { useId, useState } from "react";
 
+import { LiveIssuerConsole } from "@/components/screens/LiveIssuerConsole";
 import { CordonLine } from "@/components/record/CordonLine";
 import { Folio } from "@/components/record/Folio";
 import { ProhibitedMark } from "@/components/record/Pictograms";
@@ -14,6 +15,7 @@ import {
   Stat,
 } from "@/components/record/primitives";
 import { formatCount, formatInstant, formatUnits, shorten } from "@/lib/record/format";
+import { useRecordSource } from "@/lib/record/source";
 import {
   POLICY_PUBLISH_TX,
   PRIMARY_SUBJECT,
@@ -45,11 +47,17 @@ import {
  * revocation will cause, named before the button rather than after it.
  */
 export function IssuerScreen() {
+  const source = useRecordSource();
   const issuer = SAMPLE_ISSUERS[0]!;
   const confirmPhrase = `REVOKE ${shorten(REVOKED_CREDENTIAL.credential.credentialId, 10, 0)}`;
   const [confirmation, setConfirmation] = useState("");
   const armed = confirmation.trim().toUpperCase() === confirmPhrase.toUpperCase();
   const ids = useId();
+
+  // The sample console is a drawing of a console. Live, none of it may stand in for the chain or
+  // for a service that is not there, so the two are separate components rather than one with
+  // conditionals threaded through every figure.
+  if (source.live) return <LiveIssuerConsole />;
 
   return (
     <article>

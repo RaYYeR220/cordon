@@ -1,12 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useMemo, useState } from "react";
 import {
   ConnectWallet,
+  parseUnits,
   useCordonContext,
   useCordonCredential,
   useCordonPolicy,
   useGatedPayment,
+  type PaymentLeg,
 } from "@cordon/react";
 import { epochResetsAt, type Refusal } from "@cordon/sdk";
 
@@ -30,7 +32,12 @@ import {
   shorten,
   strk,
 } from "@/lib/record/format";
-import { LIVE_PAYEE, LIVE_POLICY_ID } from "@/lib/record/live";
+import {
+  LIVE_CLAIM_POLICY_ID,
+  LIVE_PAYEE,
+  LIVE_POLICY_ID,
+  LIVE_SETTLE_POLICY_ID,
+} from "@/lib/record/live";
 import {
   HERO_REVERT,
   POOL_FEE,
@@ -65,27 +72,77 @@ const SCENARIOS = [
   { label: "Over the per-transfer cap", amount: strk(6500n) },
 ] as const;
 
+/** The three legs a live run drives, and what each one is for. */
+const LEGS: ReadonlyArray<{ leg: PaymentLeg; label: string; blurb: string }> = [
+  { leg: "direct", label: "Direct", blurb: "Gated value straight into the payee's note, one transaction" },
+  { leg: "fund", label: "Fund", blurb: "Park value with the gate for one named payee to claim" },
+  { leg: "claim", label: "Claim", blurb: "Take a funded settlement, with the payee's own credential" },
+];
+
 export function PayScreen() {
   const source = useRecordSource();
-  const { config } = useCordonContext();
-  const [amount, setAmount] = useState<bigint>(SCENARIOS[2].amount);
+  const { config, connection } = useCordonContext();
+  const ids = useId();
+  const [sampleAmount, setSampleAmount] = useState<bigint>(SCENARIOS[2].amount);
   // Strong binding is the default and stays the default. The two modes are not
   // equivalent, and the screen never presents them as if they were.
   const [binding, setBinding] = useState<BindingMode>("strong");
   const gateAddress = source.live ? config.gateAddress : SAMPLE_GATE;
 
+  // Live composition. The amount is typed rather than picked, because the caps a
+  // published policy actually sets are small numbers a demonstration has to hit
+  // exactly — 2 against a cap of 3, then 5 against the same cap.
+  const [leg, setLeg] = useState<PaymentLeg>("direct");
+  const [amountText, setAmountText] = useState("2");
+  const [settlementId, setSettlementId] = useState("");
+  const [payeeSubjectKey, setPayeeSubjectKey] = useState("");
+  const [claimWindowHours, setClaimWindowHours] = useState("24");
+  const [fundedSettlement, setFundedSettlement] = useState<string | null>(null);
+
+  const livePolicyId =
+    leg === "direct" ? LIVE_POLICY_ID : leg === "fund" ? LIVE_SETTLE_POLICY_ID : LIVE_CLAIM_POLICY_ID;
+
+  // The clock ticks as state rather than being read during render, so the claim window a funding
+  // signs is the one the page was showing when the button was pressed.
+  const liveNow = useNow();
+
+  const parsed = useMemo(() => {
+    try {
+      return { amount: parseUnits(amountText), error: null as string | null };
+    } catch (cause) {
+      return { amount: null, error: (cause as Error).message };
+    }
+  }, [amountText]);
+
+  const amount = source.live ? (parsed.amount ?? 0n) : sampleAmount;
+
   // Live reads. Both no-op on a null id, so the sample record makes no network
   // calls at all and the hook order stays stable across a mode switch.
-  const livePolicy = useCordonPolicy(source.live ? LIVE_POLICY_ID : null, {
+  const livePolicy = useCordonPolicy(source.live ? livePolicyId : null, {
     pollMs: source.live ? 15_000 : 0,
   });
   const credential = useCordonCredential();
   const payment = useGatedPayment({
-    policyId: source.live ? LIVE_POLICY_ID : null,
-    amount: source.live ? amount : null,
-    payee: source.live ? LIVE_PAYEE : null,
+    leg,
+    policyId: source.live && leg !== "claim" ? livePolicyId : null,
+    amount: source.live && leg !== "claim" ? amount : null,
+    payee: source.live && leg === "direct" ? LIVE_PAYEE : null,
+    recipient: source.live && leg === "claim" ? (connection?.address ?? null) : null,
+    settlementId: source.live && leg !== "direct" ? settlementId.trim() || null : null,
+    payeeSubjectKey: source.live && leg === "fund" ? payeeSubjectKey.trim() || null : null,
+    payeeClaimPolicyId: source.live && leg === "fund" ? LIVE_CLAIM_POLICY_ID : null,
+    expiresAt:
+      source.live && leg === "fund" && liveNow !== null
+        ? liveNow + Math.max(1, Number(claimWindowHours) || 24) * 3600
+        : null,
     credential: credential.credential,
     subjectPrivateKey: credential.subject?.privateKey ?? null,
+    // A funded settlement's id is the only handle the payee has, and it is generated inside the
+    // SDK rather than typed — so it has to be caught the moment the funding confirms, or it is
+    // gone and the escrow is unclaimable until the refund window opens.
+    onConfirmed: (_result, authorization) => {
+      if (authorization.leg === "Fund") setFundedSettlement(authorization.settlementId);
+    },
   });
 
   const sample = useMemo(
@@ -138,7 +195,6 @@ export function PayScreen() {
   const cap = policy && policy.maxAmount > 0n ? policy.maxAmount : null;
   const ceiling = policy && policy.maxPerEpoch > 0n ? policy.maxPerEpoch : null;
   const spent = source.live ? livePolicy.epochSpend : SAMPLE_EPOCH_SPEND;
-  const liveNow = useNow();
   const now = source.live ? liveNow : SAMPLE_NOW;
   const resetsAt = source.live
     ? livePolicy.epochResetsAt
@@ -185,33 +241,141 @@ export function PayScreen() {
             right="Wallet API · three actions, one transaction"
             level={3}
           />
-          <fieldset className="border-0 p-0">
-            <legend className="label pb-tick">Amount to compose</legend>
-            <div className="flex flex-wrap gap-tick pb-bl">
-              {SCENARIOS.map((scenario) => (
-                <button
-                  key={scenario.label}
-                  type="button"
-                  className="btn"
-                  aria-pressed={amount === scenario.amount}
-                  onClick={() => setAmount(scenario.amount)}
-                  style={
-                    amount === scenario.amount
-                      ? { background: "var(--color-ink)", color: "var(--color-paper)" }
-                      : undefined
-                  }
-                >
-                  {formatUnits(scenario.amount)}
-                  <span className="sr-only"> STRK — {scenario.label}</span>
-                </button>
-              ))}
-            </div>
-            <p className="note pb-bl">
-              One amount, held once. It is what the pre-flight judges and, in live mode, what the
-              subject signs — the withdraw leg is read back off that authorisation rather than
-              typed a second time.
-            </p>
-          </fieldset>
+          {source.live ? (
+            <>
+              <fieldset className="border-0 p-0">
+                <legend className="label pb-tick">Which leg</legend>
+                <div className="flex flex-wrap gap-tick pb-tick">
+                  {LEGS.map((entry) => (
+                    <button
+                      key={entry.leg}
+                      type="button"
+                      className="btn"
+                      aria-pressed={leg === entry.leg}
+                      onClick={() => setLeg(entry.leg)}
+                      style={
+                        leg === entry.leg
+                          ? { background: "var(--color-ink)", color: "var(--color-paper)" }
+                          : undefined
+                      }
+                    >
+                      {entry.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="note pb-bl">
+                  {LEGS.find((entry) => entry.leg === leg)?.blurb}. Settling under{" "}
+                  <span className="font-mono text-ink">{livePolicyId ?? "no policy configured"}</span>
+                  {leg === "claim"
+                    ? " — the amount and the policy come from the stored settlement, not from this page."
+                    : "."}
+                </p>
+              </fieldset>
+
+              <div className="form">
+                {leg === "claim" ? null : (
+                  <div className="field">
+                    <label htmlFor={`${ids}-amount`}>Amount to compose · STRK</label>
+                    <input
+                      id={`${ids}-amount`}
+                      type="text"
+                      inputMode="decimal"
+                      value={amountText}
+                      spellCheck={false}
+                      onChange={(event) => setAmountText(event.target.value)}
+                    />
+                  </div>
+                )}
+                {leg === "fund" ? (
+                  <>
+                    <div className="field">
+                      <label htmlFor={`${ids}-payee-key`}>Payee pseudonym</label>
+                      <input
+                        id={`${ids}-payee-key`}
+                        type="text"
+                        value={payeeSubjectKey}
+                        spellCheck={false}
+                        placeholder="0x… — the key the payee derived from their own wallet"
+                        onChange={(event) => setPayeeSubjectKey(event.target.value)}
+                      />
+                    </div>
+                    <div className="field">
+                      <label htmlFor={`${ids}-window`}>Claim window · hours</label>
+                      <input
+                        id={`${ids}-window`}
+                        type="text"
+                        inputMode="numeric"
+                        value={claimWindowHours}
+                        onChange={(event) => setClaimWindowHours(event.target.value)}
+                      />
+                    </div>
+                  </>
+                ) : null}
+                {leg === "claim" ? (
+                  <div className="field">
+                    <label htmlFor={`${ids}-settlement`}>Settlement id</label>
+                    <input
+                      id={`${ids}-settlement`}
+                      type="text"
+                      value={settlementId}
+                      spellCheck={false}
+                      placeholder="0x… — from the funding transaction"
+                      onChange={(event) => setSettlementId(event.target.value)}
+                    />
+                  </div>
+                ) : null}
+              </div>
+              {parsed.error && leg !== "claim" ? (
+                <p className="note pb-bl text-red" role="alert">
+                  {parsed.error}
+                </p>
+              ) : (
+                <p className="note pb-bl">
+                  One amount, held once. It is what the pre-flight judges and what the subject
+                  signs — the withdraw action is read back off that authorisation rather than typed
+                  a second time.
+                </p>
+              )}
+              {fundedSettlement ? (
+                <div className="border-y border-ink py-tick mb-bl">
+                  <p className="label">Settlement funded — the payee needs this id</p>
+                  <p className="font-mono text-fine break-all pt-hair">{fundedSettlement}</p>
+                  <p className="note pt-tick">
+                    Random, single-use and the only handle in the event log. Nothing else can name
+                    this escrow, so send it to the payee before leaving the page.
+                  </p>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <fieldset className="border-0 p-0">
+              <legend className="label pb-tick">Amount to compose</legend>
+              <div className="flex flex-wrap gap-tick pb-bl">
+                {SCENARIOS.map((scenario) => (
+                  <button
+                    key={scenario.label}
+                    type="button"
+                    className="btn"
+                    aria-pressed={amount === scenario.amount}
+                    onClick={() => setSampleAmount(scenario.amount)}
+                    style={
+                      amount === scenario.amount
+                        ? { background: "var(--color-ink)", color: "var(--color-paper)" }
+                        : undefined
+                    }
+                  >
+                    {formatUnits(scenario.amount)}
+                    <span className="sr-only"> STRK — {scenario.label}</span>
+                  </button>
+                ))}
+              </div>
+              <p className="note pb-bl">
+                One amount, held once. It is what the pre-flight judges and, in live mode, what the
+                subject signs — the withdraw leg is read back off that authorisation rather than
+                typed a second time.
+              </p>
+            </fieldset>
+          )}
 
           <div className="border-t border-ink pt-tick pb-bl">
             <BindingControl
@@ -287,18 +451,30 @@ export function PayScreen() {
 
         {/* ── the shape, and the pipeline ────────────────────────────────── */}
         <div className="span2">
-          <SectionHead title="Transaction shape" right="Phases non-decreasing" level={3} />
+          <SectionHead
+            title="Transaction shape"
+            right={
+              source.live && leg === "claim"
+                ? "Two actions — nothing is withdrawn"
+                : source.live && leg === "fund"
+                  ? "Two actions — no note is filled"
+                  : "Phases non-decreasing"
+            }
+            level={3}
+          />
           <ol className="form">
             <Action
               number={1}
               op="withdraw"
               detail={
                 <>
-                  <i className="not-italic text-ink">{formatUnits(amount + POOL_FEE)} STRK</i>{" "}
-                  from the shielded balance{" "}
+                  <i className="not-italic text-ink">{formatUnits(amount)} STRK</i>{" "}
+                  from the shielded balance to the gate — exactly the amount the subject signed.
+                  The pool&rsquo;s {formatUnits(POOL_FEE)} STRK fee is charged{" "}
                   <span className="text-ink-3">
-                    ({formatUnits(amount)} + {formatUnits(POOL_FEE)} pool fee)
+                    separately from the same shielded balance, once per transaction
                   </span>
+                  ; withdrawing it here would strand it at the gate as dust.
                 </>
               }
             />
@@ -359,14 +535,30 @@ export function PayScreen() {
                 Run the gate again
               </button>
               {source.live ? (
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => void payment.pay()}
-                  disabled={!payment.ready || payment.busy}
-                >
-                  {payment.busy ? "Working" : "Submit for real"}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="btn btn--heavy"
+                    onClick={() => void payment.pay()}
+                    disabled={!payment.ready || payment.busy}
+                  >
+                    {payment.busy ? "Working" : "Submit for real"}
+                  </button>
+                  {/*
+                    The pre-flight stops a payment it can already tell will be refused, which saves
+                    the pool fee — but proving the gate refused *on chain* is a stronger claim than
+                    predicting it, and that needs the transaction to actually run and revert. So the
+                    override exists, it is named for what it costs, and it is never the default.
+                  */}
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => void payment.pay({ force: true })}
+                    disabled={payment.busy || payment.blockers.length > 0}
+                  >
+                    Submit anyway, and let it revert
+                  </button>
+                </>
               ) : null}
             </div>
             <p className="label" aria-live="polite">
