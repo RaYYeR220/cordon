@@ -431,6 +431,20 @@ export function PayScreen() {
               label="Per-transfer cap"
               value={cap === null ? (policy ? "unlimited" : null) : `${formatUnits(cap)} STRK`}
             />
+            {leg === "direct" ? (
+              <Row
+                label="Payee · receives the note"
+                value={
+                  source.live ? (
+                    LIVE_PAYEE ? (
+                      <ContractRef address={LIVE_PAYEE} live />
+                    ) : null
+                  ) : (
+                    <span className="num">a pool user, in the sample record</span>
+                  )
+                }
+              />
+            ) : null}
             <Row label="Token · STRK" value={<ContractRef address={STRK_TOKEN} live />} />
             <Row
               label="Privacy pool · STRK20"
