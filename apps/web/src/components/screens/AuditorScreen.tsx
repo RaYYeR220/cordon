@@ -43,6 +43,14 @@ export function AuditorScreen() {
 
 /* ── live ───────────────────────────────────────────────────────────────── */
 
+/**
+ * How far back the evidence read looks, in blocks.
+ *
+ * Printed on the page, because a count of nought means nothing until a reader knows what range it
+ * counted. Mainnet blocks are roughly half a minute apart, so this is about three weeks.
+ */
+const LOOKBACK_BLOCKS = 60_000;
+
 function LiveAuditor() {
   const { config, registries } = useCordonContext();
   // Only what the chain published, and only passes: this is the evidence base an auditor works
@@ -52,8 +60,12 @@ function LiveAuditor() {
     limit: 100,
     pollMs: 30_000,
     chainOnly: true,
+    lookbackBlocks: LOOKBACK_BLOCKS,
   });
 
+  // A read that answered is a fact even when the answer is none, because the range it covers is
+  // bounded and named. A read that did not answer is not, and its figures stay unavailable.
+  const answered = feed.status !== "unavailable";
   const evidence = useEvidence(feed.passes);
   const newest = feed.passes[0] ?? null;
 
@@ -146,14 +158,14 @@ function LiveAuditor() {
               <tr>
                 <td>Pass events read</td>
                 <td className="num amount">
-                  {evidence.read ? formatCount(evidence.count) : <Unavailable />}
+                  {answered ? formatCount(evidence.count) : <Unavailable />}
                 </td>
                 <td className="text-ink-3">PolicyPassed</td>
               </tr>
               <tr>
                 <td>Total volume in those events</td>
                 <td className="num amount">
-                  {evidence.read ? `${formatUnits(evidence.volume)} STRK` : <Unavailable />}
+                  {answered ? `${formatUnits(evidence.volume)} STRK` : <Unavailable />}
                 </td>
                 <td className="text-ink-3">sum of plaintext gate amounts</td>
               </tr>
@@ -192,10 +204,11 @@ function LiveAuditor() {
             </p>
           ) : evidence.read ? null : (
             <p className="note pt-bl">
-              No event came back. The read walks a bounded number of pages rather than the whole
-              chain, so this says none was found in what was read — not that the gate has passed
-              nothing. Every figure says <i>unavailable</i> for that reason, and none of them says
-              nought.
+              The gate published no <span className="font-mono">PolicyPassed</span> event in the
+              last {formatCount(LOOKBACK_BLOCKS)} blocks, so there is no evidence base here yet.
+              Nought is what that window holds; the block range and the policies stay{" "}
+              <i>unavailable</i>, because an empty window has neither. Anything older was not
+              looked at and is not claimed absent.
             </p>
           )}
         </div>

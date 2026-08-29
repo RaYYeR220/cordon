@@ -84,9 +84,21 @@ const CONFIGURED_POLICIES = [LIVE_POLICY_ID, LIVE_SETTLE_POLICY_ID, LIVE_CLAIM_P
   (id): id is string => Boolean(id)
 );
 
+/**
+ * How far back the live feed looks, in blocks.
+ *
+ * Named here rather than left to the package default because the screen prints it: an empty table
+ * has to say what range it covers, or it reads as a claim about the gate rather than about a
+ * window. Mainnet blocks are roughly half a minute apart, so this is about three weeks.
+ */
+const LOOKBACK_BLOCKS = 60_000;
+
 function LiveMonitor() {
   const { config, registries, refusals } = useCordonContext();
-  const feed = useGateFeed({ limit: 25, pollMs: 15_000 });
+  // The window is named rather than left to the package's default, because the screen has to say
+  // how far back it looked. An empty table means nothing in this many blocks — a fact about a
+  // stated range, not about the gate's whole life.
+  const feed = useGateFeed({ limit: 25, pollMs: 15_000, lookbackBlocks: LOOKBACK_BLOCKS });
   const standing = useRegistryStanding();
 
   const rows = useMemo<DecisionRow[]>(
@@ -130,11 +142,10 @@ function LiveMonitor() {
   const latest = refusals[0] ?? null;
   const latestStep = latest ? (latest.refusal.step ?? stepOf(latest.refusal.code)) : null;
 
-  // An event read that came back with nothing is not the same as a gate that has passed nothing.
-  // The read walks a bounded number of pages rather than the whole chain, so an empty result means
-  // no event was found in what was read — which is a fact about the read, not about the gate. It
-  // is reported as unavailable and said out loud below the table rather than printed as a zero.
-  const passesRead = feed.passes.length > 0 ? feed.passes.length : null;
+  // A read that answered is a fact, including when the answer is none: the range is bounded and
+  // named, and the walk is reported as unavailable if it does not reach the head. A read that did
+  // not answer is not a zero, and never renders as one.
+  const passesRead = feed.status === "unavailable" ? null : feed.passes.length;
 
   return (
     <article>
@@ -150,7 +161,8 @@ function LiveMonitor() {
           },
           {
             label: "Window",
-            value: passesRead === null ? null : `${formatCount(passesRead)} most recent`,
+            value:
+              passesRead === null ? null : `last ${formatCount(LOOKBACK_BLOCKS)} blocks`,
           },
         ]}
       />
@@ -311,11 +323,12 @@ function LiveMonitor() {
         </p>
       ) : rows.length === 0 ? (
         <p className="note pt-tick">
-          Nothing to list: no <span className="font-mono">PolicyPassed</span> event came back and no
-          refusal has been watched here. The read walks a bounded number of pages rather than the
-          whole chain, so an empty table says no event was found in what was read — not that this
-          gate has never passed anything. That is why the pass count above says <i>unavailable</i>{" "}
-          rather than nought.
+          Nothing to list: the gate emitted no{" "}
+          <span className="font-mono">PolicyPassed</span> event in the last{" "}
+          {formatCount(LOOKBACK_BLOCKS)} blocks, and no refusal has been watched here. That is a
+          statement about a stated window and not about the gate&rsquo;s whole life — anything
+          older than it was not looked at, and is not claimed absent. A read that could not reach
+          the chain head is reported as <i>unavailable</i> rather than as an empty window.
         </p>
       ) : null}
 
