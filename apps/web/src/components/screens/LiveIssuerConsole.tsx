@@ -21,6 +21,7 @@ import {
   feltToShortString,
   policyFromCalldata,
   shortStringToFelt,
+  toFelt,
   type Policy,
 } from "@cordon/sdk";
 
@@ -65,6 +66,7 @@ export function LiveIssuerConsole() {
   // NOT_SANCTIONED can never have this page offering ACCREDITED.
   const [chosenClaim, setChosenClaim] = useState<string | null>(null);
   const [basis, setBasis] = useState("");
+  const [credentialId, setCredentialId] = useState("");
   const [address, setAddress] = useState("");
   const [adminToken, setAdminToken] = useState("");
   const [working, setWorking] = useState(false);
@@ -96,6 +98,24 @@ export function LiveIssuerConsole() {
     [identity, claim],
   );
 
+  /**
+   * The credential id as the service will receive it.
+   *
+   * A credential id is a felt, but the useful ones are readable short strings, and the service
+   * takes only the felt. Converting here rather than there keeps the API strict and lets the
+   * operator see exactly what is about to be sent — a silent conversion on the far side would mean
+   * the id on this screen and the id a revocation later has to name were two different strings.
+   */
+  const credentialIdFelt = useMemo(() => {
+    const text = credentialId.trim();
+    if (text === "") return { felt: null as string | null, error: null as string | null };
+    try {
+      return { felt: toFelt(text), error: null };
+    } catch (cause) {
+      return { felt: null, error: (cause as Error).message };
+    }
+  }, [credentialId]);
+
   const registryKey = useOnChainIssuerKey(identity?.issuerId ?? null);
   const policies = useOnChainPolicies();
 
@@ -120,6 +140,7 @@ export function LiveIssuerConsole() {
       const result = await issueCredentialRequest(LIVE_ISSUER_URL, {
         subjectPublicKey: subject.trim(),
         claim,
+        ...(credentialIdFelt.felt ? { credentialId: credentialIdFelt.felt } : {}),
         ...(address.trim() ? { address: address.trim() } : {}),
         ...(basis.trim() ? { basis: basis.trim() } : {}),
         ...(adminToken.trim() ? { adminToken: adminToken.trim() } : {}),
@@ -129,12 +150,13 @@ export function LiveIssuerConsole() {
     } finally {
       setWorking(false);
     }
-  }, [subject, claim, address, basis, adminToken]);
+  }, [subject, claim, credentialIdFelt, address, basis, adminToken]);
 
   const ready =
     Boolean(LIVE_ISSUER_URL) &&
     /^0x[0-9a-fA-F]{1,64}$/.test(subject.trim()) &&
     claim !== "" &&
+    credentialIdFelt.error === null &&
     (spec?.evidence !== "operator-attestation" || basis.trim() !== "") &&
     (spec?.evidence !== "ofac-screen" || /^0x[0-9a-fA-F]{1,64}$/.test(address.trim()));
 
@@ -340,6 +362,35 @@ export function LiveIssuerConsole() {
               </select>
             </div>
             {spec ? <p className="note pb-tick">{spec.description}</p> : null}
+
+            <div className="field">
+              <label htmlFor={`${ids}-cid`}>Credential id · optional</label>
+              <input
+                id={`${ids}-cid`}
+                type="text"
+                value={credentialId}
+                spellCheck={false}
+                placeholder="A short string, or blank to have one derived"
+                onChange={(event) => setCredentialId(event.target.value)}
+              />
+            </div>
+            <p className="note pb-tick">
+              Worth naming when the credential will be revoked later: revocation is an invoke that
+              takes this id, from a wallet, and an id chosen now is one that does not have to be
+              copied off a screen at the moment it matters. Issuer-scoped and single-use.
+              {credentialIdFelt.felt ? (
+                <>
+                  {" "}
+                  Sent as <span className="font-mono text-ink">{credentialIdFelt.felt}</span>.
+                </>
+              ) : null}
+              {credentialIdFelt.error ? (
+                <>
+                  {" "}
+                  <span className="text-red">{credentialIdFelt.error}</span>
+                </>
+              ) : null}
+            </p>
 
             {spec?.evidence === "ofac-screen" ? (
               <div className="field">

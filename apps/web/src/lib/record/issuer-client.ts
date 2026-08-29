@@ -168,6 +168,8 @@ export async function fetchIssuerHealth(
 export interface IssueParams {
   subjectPublicKey: string;
   claim: string;
+  /** Issuer-scoped id. Derived from the subject and the moment when omitted. */
+  credentialId?: string;
   /** The address to screen. Only used by a claim the service has a live source for. */
   address?: string;
   /** What the operator is relying on. Required for a claim nothing can be screened for. */
