@@ -37,7 +37,13 @@ jobs:
           NEXT_PUBLIC_STRK20_POOL_ADDRESS: "0x040337b1af3c663e86e333bab5a4b28da8d4652a15a69beee2b677776ffe812a"
           NEXT_PUBLIC_CORDON_GATE_ADDRESS: "0x061c734fe518f4c1a0e46d3d2a35b4ff1ab0df17dec510cff401d25e67dfc6b2"
           NEXT_PUBLIC_CORDON_POLICY_ID: PAY_ACCREDITED_V1
+          NEXT_PUBLIC_CORDON_SETTLE_POLICY_ID: SETTLE_ACCREDITED_V1
+          NEXT_PUBLIC_CORDON_CLAIM_POLICY_ID: RECV_KYC_L2_V1
           NEXT_PUBLIC_CORDON_PAYEE: "0x031925A2Cb59C0F6156CdFF7A449C6Fe085000B02DA1d388da41de678E3B86de"
+          # NEXT_PUBLIC_CORDON_ISSUER_URL is deliberately absent. The issuer holds a signing key
+          # and belongs on a host its operator controls, not behind a static page — so the console
+          # here says issuance is unavailable rather than pointing a judge's browser at a service
+          # that is not ours to publish.
 
       # Pages serves what it is given verbatim; without this, Jekyll drops _next/.
       - run: touch apps/web/out/.nojekyll
