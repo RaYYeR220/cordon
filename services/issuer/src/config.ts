@@ -37,6 +37,21 @@ export interface Config {
   issuerOperator: string;
   /** Bearer token guarding revocation and forced refreshes. Empty means those routes are open. */
   adminToken: string;
+  /**
+   * Browser origins allowed to call this service.
+   *
+   * Empty means none, which is the right default for a service holding a signing key: without it
+   * only a server or a `curl` can reach these routes. The issuer console is a browser page, so a
+   * deployment that wants one has to name its origin.
+   */
+  allowedOrigins: string[];
+  /**
+   * Claims this deployment may sign on the operator's word rather than on a source it checked.
+   *
+   * Empty by default. `NOT_SANCTIONED` is not in here and cannot be: the service has a live source
+   * for it, and an attested version of a claim it can check for itself would be strictly weaker.
+   */
+  attestedClaims: string[];
   /** Where the OFAC lists are fetched from. */
   ofacSources: string[];
   /**
@@ -89,6 +104,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     issuerMetadataUri: env["ISSUER_METADATA_URI"] ?? "",
     issuerOperator: address(env, "ISSUER_OPERATOR_ADDRESS"),
     adminToken: env["ISSUER_ADMIN_TOKEN"] ?? "",
+    allowedOrigins: list(env["ISSUER_ALLOWED_ORIGINS"]) ?? [],
+    attestedClaims: claims(env["ISSUER_ATTESTED_CLAIMS"]),
     ofacSources: list(env["OFAC_SOURCES"]) ?? [...DEFAULT_OFAC_SOURCES],
     ofacMaxAgeSeconds: integer(env, "OFAC_MAX_AGE_SECONDS", 86_400),
     ofacFetchTimeoutMs: integer(env, "OFAC_FETCH_TIMEOUT_MS", 120_000),
@@ -113,6 +130,8 @@ export function redactConfig(config: Config): Record<string, unknown> {
     issuerMetadataUri: config.issuerMetadataUri,
     issuerOperator: config.issuerOperator,
     adminTokenSet: config.adminToken.length > 0,
+    allowedOrigins: config.allowedOrigins,
+    attestedClaims: config.attestedClaims,
     ofacSources: config.ofacSources,
     ofacMaxAgeSeconds: config.ofacMaxAgeSeconds,
     ofacFetchTimeoutMs: config.ofacFetchTimeoutMs,
@@ -149,6 +168,26 @@ function integer(env: NodeJS.ProcessEnv, name: string, fallback: number): number
     throw new ConfigError(`${name} must be a positive integer, got ${JSON.stringify(raw)}`);
   }
   return value;
+}
+
+/**
+ * The attested claims, as Cairo short strings.
+ *
+ * A claim is a felt on chain, so anything over 31 characters could never match a published
+ * policy's `required_claim`. Catching that here means the failure is a startup message rather than
+ * a credential that verifies, settles nothing, and gives no reason.
+ */
+function claims(raw: string | undefined): string[] {
+  const entries = list(raw) ?? [];
+  for (const claim of entries) {
+    if (claim.length > 31) {
+      throw new ConfigError(
+        `ISSUER_ATTESTED_CLAIMS entry ${JSON.stringify(claim)} is ${claim.length} characters; a ` +
+          "claim is a Cairo short string and cannot exceed 31.",
+      );
+    }
+  }
+  return entries;
 }
 
 function list(raw: string | undefined): string[] | null {

@@ -85,6 +85,8 @@ export function testConfig(directory: string, overrides: Partial<Config> = {}): 
     issuerMetadataUri: "https://cordon.test/issuer.json",
     issuerOperator: TEST_OPERATOR_ADDRESS,
     adminToken: "",
+    allowedOrigins: [],
+    attestedClaims: [],
     ofacSources: ["https://ofac.test/sdn.xml"],
     ofacMaxAgeSeconds: 86_400,
     ofacFetchTimeoutMs: 5_000,

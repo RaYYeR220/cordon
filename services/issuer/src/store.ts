@@ -12,16 +12,36 @@ import { dirname } from "node:path";
 import type { CredentialJson } from "@cordon/sdk";
 import type { Screening } from "./ofac/screening.js";
 
+/**
+ * What an operator asserted, when this service had no source of its own.
+ *
+ * Present on exactly the credentials nothing was screened for, which is what keeps the register
+ * readable: a record carries either a `screening` or an `attestation`, never both and never
+ * neither, so "what was this credential worth" has one answer you can point at.
+ */
+export interface Attestation {
+  /** Always this, so a reader never has to infer it from the absence of a screening. */
+  evidence: "operator-attestation";
+  /** What the operator was relying on, in their own words. */
+  basis: string;
+  /** ISO 8601. */
+  at: string;
+}
+
 /** One issued credential and the evidence behind it. */
 export interface IssuedRecord {
   /** The credential id, as a felt. Unique per issuer. */
   credentialId: string;
+  /** The claim asserted, as a readable short string. */
+  claim: string;
   /** The credential itself, ready to hand back to the subject. */
   credential: CredentialJson;
-  /** The public Starknet address that was screened. Not the subject pseudonym. */
-  screenedAddress: string;
-  /** The screening that justified issuing. */
-  screening: Screening;
+  /** The public Starknet address that was screened, or null when nothing was screened. */
+  screenedAddress: string | null;
+  /** The screening that justified issuing, or null for an operator attestation. */
+  screening: Screening | null;
+  /** The operator's assertion, or null when the service checked a source itself. */
+  attestation: Attestation | null;
   /** ISO 8601. */
   issuedAt: string;
   /** ISO 8601, set when the issuer withdraws the credential. */

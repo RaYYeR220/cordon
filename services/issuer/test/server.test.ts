@@ -434,3 +434,162 @@ describe("POST /ofac/refresh", () => {
     expect((await app.inject({ method: "POST", url: "/ofac/refresh" })).statusCode).toBe(401);
   });
 });
+
+describe("attested claims", () => {
+  const attested = { attestedClaims: ["ACCREDITED", "KYC_L2"], adminToken: "s3cret" };
+
+  it("refuses a claim this deployment was not configured to attest", async () => {
+    const { app } = await start();
+    const response = await app.inject({
+      method: "POST",
+      url: "/credentials",
+      payload: { subjectPublicKey: SUBJECT_PUBLIC_KEY, claim: "ACCREDITED", basis: "anything" },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().message).toContain("does not attest");
+  });
+
+  it("names its whole catalogue, and what stands behind each entry", async () => {
+    const { app } = await start({ config: attested });
+    const body = (await app.inject({ method: "GET", url: "/issuer" })).json();
+
+    expect(body.claims.map((entry: { claim: string }) => entry.claim)).toEqual([
+      "NOT_SANCTIONED",
+      "ACCREDITED",
+      "KYC_L2",
+    ]);
+    expect(body.claims[0].evidence).toBe("ofac-screen");
+    expect(body.claims[0].requiresAdmin).toBe(false);
+    expect(body.claims[1].evidence).toBe("operator-attestation");
+    expect(body.claims[1].requiresAdmin).toBe(true);
+  });
+
+  it("will not attest without the admin token", async () => {
+    const { app } = await start({ config: attested });
+    const response = await app.inject({
+      method: "POST",
+      url: "/credentials",
+      payload: { subjectPublicKey: SUBJECT_PUBLIC_KEY, claim: "ACCREDITED", basis: "on file" },
+    });
+
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("will not attest without a basis, because the record would be unauditable", async () => {
+    const { app } = await start({ config: attested });
+    const response = await app.inject({
+      method: "POST",
+      url: "/credentials",
+      headers: { authorization: "Bearer s3cret" },
+      payload: { subjectPublicKey: SUBJECT_PUBLIC_KEY, claim: "ACCREDITED" },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().message).toContain("basis is required");
+  });
+
+  it("signs a verifiable credential and records it as an operator's word, not a screen", async () => {
+    const { app, config, store } = await start({ config: attested });
+    const response = await app.inject({
+      method: "POST",
+      url: "/credentials",
+      headers: { authorization: "Bearer s3cret" },
+      payload: {
+        subjectPublicKey: SUBJECT_PUBLIC_KEY,
+        claim: "ACCREDITED",
+        basis: "Reg D questionnaire, reviewed 2026-08-29",
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const body = response.json();
+    expect(body.claim).toBe("ACCREDITED");
+    expect(body.evidence).toBe("operator-attestation");
+    expect(body.screening).toBeNull();
+    expect(body.attestation.basis).toBe("Reg D questionnaire, reviewed 2026-08-29");
+
+    // The signature is the only thing the gate will look at, so it has to verify against the
+    // registered key exactly as a screened credential's does.
+    const credential = credentialFromJson(body.credential);
+    expect(
+      verifyCredentialSignature(
+        credential,
+        subjectPublicKey(config.issuerPrivateKey),
+        credential.signature,
+      ),
+    ).toBe(true);
+    expect(credential.claim).toBe("0x41434352454449544544"); // 'ACCREDITED'
+    expect(decodeCredential(body.compact)).toEqual(credential);
+
+    const record = store.find(body.credential.credentialId);
+    expect(record?.screening).toBeNull();
+    expect(record?.screenedAddress).toBeNull();
+    expect(record?.attestation?.evidence).toBe("operator-attestation");
+  });
+
+  it("screens nothing for an attested claim, and takes no address to pretend it did", async () => {
+    // The fetch would throw if the screening ran at all, which is the assertion: an attested
+    // claim must not be able to reach the OFAC path even when a caller sends an address.
+    const { app } = await start({ fetchImpl: failingFetch(), config: attested });
+    const response = await app.inject({
+      method: "POST",
+      url: "/credentials",
+      headers: { authorization: "Bearer s3cret" },
+      payload: {
+        subjectPublicKey: SUBJECT_PUBLIC_KEY,
+        claim: "KYC_L2",
+        basis: "documents checked in person",
+        address: LISTED_ETH,
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json().screening).toBeNull();
+    expect(JSON.stringify(response.json())).not.toContain(LISTED_ETH);
+  });
+
+  it("still screens the claim it has a source for, even alongside attested ones", async () => {
+    const { app } = await start({ config: attested });
+    const response = await app.inject({
+      method: "POST",
+      url: "/credentials",
+      payload: { subjectPublicKey: SUBJECT_PUBLIC_KEY, address: CLEAN_ADDRESS },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json().claim).toBe("NOT_SANCTIONED");
+    expect(response.json().evidence).toBe("ofac-screen");
+    expect(response.json().screening.status).toBe("clear");
+  });
+});
+
+describe("cross-origin access", () => {
+  it("allows only the origins the deployment named", async () => {
+    const { app } = await start({ config: { allowedOrigins: ["http://localhost:3000"] } });
+
+    const allowed = await app.inject({
+      method: "GET",
+      url: "/issuer",
+      headers: { origin: "http://localhost:3000" },
+    });
+    expect(allowed.headers["access-control-allow-origin"]).toBe("http://localhost:3000");
+
+    const other = await app.inject({
+      method: "GET",
+      url: "/issuer",
+      headers: { origin: "https://not-ours.example" },
+    });
+    expect(other.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+
+  it("allows nothing at all by default", async () => {
+    const { app } = await start();
+    const response = await app.inject({
+      method: "GET",
+      url: "/issuer",
+      headers: { origin: "http://localhost:3000" },
+    });
+    expect(response.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+});

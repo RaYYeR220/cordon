@@ -19,10 +19,10 @@ import {
   type Credential,
   type Felt,
 } from "@cordon/sdk";
+import { NOT_SANCTIONED, claimCatalogue, type ClaimSpec } from "./claims.js";
 import type { Screening } from "./ofac/screening.js";
 
-/** The only claim this service attests. */
-export const NOT_SANCTIONED: string = "NOT_SANCTIONED";
+export { NOT_SANCTIONED };
 
 /** A request to attest a subject. */
 export interface IssueRequest {
@@ -86,6 +86,43 @@ export function issue(
   return { issued: true, credential, screening };
 }
 
+/** A request to attest something this service has no source for. */
+export interface AttestRequest {
+  subjectPublicKey: Felt;
+  credentialId: Felt;
+  expiresAt: number;
+  /** The claim, which must be one this deployment is configured to attest. */
+  claim: string;
+  /** What the operator is relying on. Recorded verbatim; an attestation without one is unauditable. */
+  basis: string;
+}
+
+/**
+ * Sign a claim on the operator's word.
+ *
+ * Deliberately a separate function from {@link issue}, and deliberately takes no `Screening`. The
+ * two paths must not be able to drift into each other: nothing here can accidentally attach a
+ * screening record to a credential that was never screened, and nothing in `issue` can sign a
+ * claim it has no source for. The honesty of the register depends on that separation, not on a
+ * caller remembering which fields to fill in.
+ */
+export function attest(
+  request: AttestRequest,
+  issuerId: Felt,
+  issuerPrivateKey: Felt,
+): Credential {
+  return issueCredential(
+    {
+      issuerId,
+      credentialId: request.credentialId,
+      subjectPublicKey: request.subjectPublicKey,
+      claim: request.claim,
+      expiresAt: request.expiresAt,
+    },
+    issuerPrivateKey,
+  );
+}
+
 /** The issuer's own public identity: what a registry operator needs to register it. */
 export interface IssuerIdentity {
   /** The issuer id, as a felt. */
@@ -94,7 +131,9 @@ export interface IssuerIdentity {
   issuerName: string | null;
   /** The public key `register_issuer` takes. The private half never leaves the process. */
   publicKey: Felt;
-  /** The claim this issuer attests, and the only one it can. */
+  /** Every claim this deployment will sign, and what stands behind each one. */
+  claims: ClaimSpec[];
+  /** The claim this issuer has a live source for, and can sign without anyone's word. */
   claim: string;
   /** Off-chain metadata: who runs it, what it screens, how to reach it. */
   metadataUri: string;
@@ -118,12 +157,14 @@ export function issuerIdentity(options: {
   issuerPrivateKey: Felt;
   metadataUri: string;
   operator: string;
+  attestedClaims?: readonly string[];
 }): IssuerIdentity {
   const publicKey = subjectPublicKey(options.issuerPrivateKey);
   return {
     issuerId: options.issuerId,
     issuerName: feltToShortString(options.issuerId),
     publicKey,
+    claims: claimCatalogue(options.attestedClaims ?? []),
     claim: NOT_SANCTIONED,
     metadataUri: options.metadataUri,
     operator: options.operator,
