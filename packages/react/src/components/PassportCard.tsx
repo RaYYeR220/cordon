@@ -199,12 +199,20 @@ function SubjectControl({ state }: { state: UseCordonCredential }): ReactNode {
   const [deriving, setDeriving] = useState(false);
   const [declined, setDeclined] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [drifted, setDrifted] = useState(false);
 
   const derive = async (): Promise<void> => {
     setDeriving(true);
     setDeclined(false);
+    const previous = state.subject?.publicKey ?? null;
     try {
-      setDeclined((await state.deriveSubject()) === null);
+      const next = await state.deriveSubject();
+      setDeclined(next === null);
+      // Deriving twice and comparing is the only way to find out whether this wallet's signer is
+      // deterministic, and it costs nothing but a second prompt. It matters because the key is not
+      // persisted: a wallet that signs with fresh randomness hands back a different pseudonym on
+      // every derivation, which quietly orphans a credential the moment the page is reloaded.
+      if (next !== null && previous !== null) setDrifted(next.publicKey !== previous);
     } finally {
       setDeriving(false);
     }
@@ -267,6 +275,15 @@ function SubjectControl({ state }: { state: UseCordonCredential }): ReactNode {
               ? "Held for this session only. Hand this key to an issuer to be attested; it is not a wallet address and reveals nothing about one."
               : "One signature, nothing spent. The key never leaves this page and is not written to disk."}
       </p>
+      {drifted ? (
+        <p className="cordon-note" role="alert">
+          This wallet produced a <b>different</b> pseudonym from the same message, so its signer is
+          not deterministic. The key cannot be reproduced later, and any credential issued against
+          the earlier one is now unusable. Do not reload this page until you are finished, and have
+          the credential reissued against the key shown above.
+        </p>
+      ) : null}
+
       {state.credential && state.subject && !state.matchesSubject ? (
         <p className="cordon-note" role="alert">
           The loaded credential is about a different pseudonym, so this session cannot authorise
