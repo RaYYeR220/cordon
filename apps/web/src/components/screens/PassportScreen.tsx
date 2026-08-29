@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { PassportCard, useCordonCredential } from "@cordon/react";
+import { ConnectWallet, PassportCard, useCordonCredential, useCordonContext } from "@cordon/react";
 import { epochResetsAt, feltToShortString } from "@cordon/sdk";
 
 import { CordonLine } from "@/components/record/CordonLine";
@@ -56,6 +56,7 @@ import { DEFAULT_POOL_ADDRESS } from "@/lib/strk20";
 export function PassportScreen() {
   const source = useRecordSource();
   const credential = useCordonCredential();
+  const { connection } = useCordonContext();
 
   const verdicts = useMemo(
     () =>
@@ -366,7 +367,13 @@ export function PassportScreen() {
         right="Derive a pseudonym from your wallet, then load the credential issued for it"
       />
       <Rule weight="thin" />
-      <div className="pt-bl max-w-[72ch]">
+      <div className="pt-bl max-w-[72ch] flex flex-col gap-bl">
+        {/*
+          The wallet belongs on this screen and not only on Pay: the pseudonym is derived from a
+          wallet signature, and this is where it is derived. Without it the derive control has
+          nothing to ask and the flow has no first step.
+        */}
+        {source.live && !connection ? <ConnectWallet title={null} /> : null}
         <PassportCard credential={credential} allowDerive allowImport title={null} />
       </div>
       <p className="note pt-bl max-w-[74ch]">
