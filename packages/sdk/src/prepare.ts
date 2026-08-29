@@ -9,7 +9,9 @@
  * wallet's private key.
  *
  * `strk20PrepareInvoke` is the way out. It returns a **fully resolved** Starknet `Call`, so the
- * substituted note id is sitting in `call.calldata`. The flow is:
+ * substituted note id is sitting in `call.calldata`. Note what that call actually is: the pool's
+ * own `apply_actions` transaction, with our `privacy_invoke` nested inside it among the withdraw
+ * and transfer actions. The note id is in the middle of that array, never at the end. The flow is:
  *
  * 1. prepare once with a throwaway authorisation, to learn the note id;
  * 2. sign the real authorisation bound to that id;
@@ -43,6 +45,7 @@ import {
   buildDirectActions,
   buildFundActions,
   buildRefundActions,
+  encodeGateCalldata,
   type ClaimAuthorization,
   type DirectAuthorization,
   type FundAuthorization,
@@ -121,16 +124,52 @@ export class NoteDriftError extends Error {
 }
 
 /**
- * Read the resolved open note id out of a prepared call.
+ * The shape of the gate invoke this SDK built, as it appears inside a prepared call.
  *
- * The note id is the last felt of the gate's calldata — `privacy_invoke(operation, token,
- * pool_address, note_id)` — and this SDK built that calldata, so the position is known rather than
- * guessed.
- *
- * Throws {@link NotePreparationError} if the wallet did not resolve the placeholder, which is a
- * condition to report, not to work around.
+ * Everything here is known because the SDK produced the calldata in the first place; nothing about
+ * it is inferred from the wallet's output.
  */
-export function readResolvedNoteId(prepared: PreparedInvoke): Felt {
+export interface GateInvokeShape {
+  /** The `PolicyGate` being invoked. */
+  gate: Address;
+  /** The ERC20 being settled — the third-from-last felt of the invoke calldata. */
+  token: Address;
+  /** The privacy pool — the second-from-last felt, after substitution. */
+  pool: Address;
+  /** How many felts the invoke calldata has. */
+  calldataLength: number;
+}
+
+/** The shape of the invoke a given authorisation produces. */
+export function gateInvokeShape(authorization: GateAuthorization): GateInvokeShape {
+  return {
+    gate: authorization.context.gate,
+    token: authorization.token,
+    pool: authorization.context.pool,
+    calldataLength: encodeGateCalldata(authorization).length,
+  };
+}
+
+/**
+ * Find our `privacy_invoke` inside a prepared call, and return its calldata.
+ *
+ * A prepared call is **not** the gate invoke. It is the pool's `apply_actions` transaction, and our
+ * invoke is one nested segment of it, laid out as `[…, gate, length, …length felts…, …]`. So the
+ * invoke is located by matching the whole shape rather than by counting from either end:
+ *
+ * - the gate address, followed by
+ * - the exact length this SDK encoded, in bounds, and
+ * - the token and the pool address in the two positions before the segment's last felt, which is
+ *   where `privacy_invoke(operation, token, pool_address, note_id)` puts them.
+ *
+ * Matching the whole shape is what makes this safe. The gate address alone is not enough — it also
+ * appears as the withdraw recipient, twice in the mainnet transaction this is tested against — and
+ * a position guessed from either end lands on an unrelated felt.
+ */
+export function findGateInvokeCalldata(
+  prepared: PreparedInvoke,
+  shape: GateInvokeShape,
+): { calldata: string[]; gateIndex: number; noteIdIndex: number } {
   const calldata = prepared?.call?.calldata;
   if (!Array.isArray(calldata) || calldata.length === 0) {
     throw new NotePreparationError(
@@ -142,41 +181,101 @@ export function readResolvedNoteId(prepared: PreparedInvoke): Felt {
     );
   }
 
-  const last = calldata[calldata.length - 1];
-  if (typeof last !== "string") {
+  const matches: { gateIndex: number; noteIdIndex: number }[] = [];
+  for (let index = 0; index < calldata.length; index += 1) {
+    const felt = calldata[index];
+    if (typeof felt !== "string" || !isFelt(felt) || !feltEquals(felt, shape.gate)) continue;
+
+    const declaredLength = calldata[index + 1];
+    if (typeof declaredLength !== "string" || !isFelt(declaredLength)) continue;
+    if (!feltEquals(declaredLength, shape.calldataLength)) continue;
+
+    const noteIdIndex = index + 1 + shape.calldataLength;
+    if (noteIdIndex >= calldata.length) continue;
+
+    const poolFelt = calldata[noteIdIndex - 1];
+    const tokenFelt = calldata[noteIdIndex - 2];
+    if (typeof poolFelt !== "string" || typeof tokenFelt !== "string") continue;
+    if (!isFelt(poolFelt) || !isFelt(tokenFelt)) continue;
+    if (!feltEquals(poolFelt, shape.pool) || !feltEquals(tokenFelt, shape.token)) continue;
+
+    matches.push({ gateIndex: index, noteIdIndex });
+  }
+
+  if (matches.length === 0) {
     throw new NotePreparationError(
-      `the last calldata element is ${typeof last}, not a felt; the prepared call is not the ` +
-        "gate invoke this SDK built",
+      `could not find this SDK's privacy_invoke in the prepared call. Looked for gate ` +
+        `${shape.gate} followed by a length of ${shape.calldataLength}, with token ${shape.token} ` +
+        `and pool ${shape.pool} in the two positions before the note id, across ` +
+        `${calldata.length} felts. The prepared call is not the transaction this SDK built, so no ` +
+        "note id can be read from it — and guessing one would produce a binding the gate refuses " +
+        "with CORDON_NOTE_MISMATCH.",
       prepared,
     );
   }
-  if (isPlaceholder(last)) {
+  if (matches.length > 1) {
     throw new NotePreparationError(
-      `strk20PrepareInvoke returned the unsubstituted placeholder ${last}. This wallet does not ` +
+      `found ${matches.length} calldata segments matching this gate invoke, at indices ` +
+        `${matches.map((match) => match.gateIndex).join(", ")}. The pool allows at most one invoke ` +
+        "per transaction, so this call is not what this SDK built. Refusing to guess which one to " +
+        "bind to.",
+      prepared,
+    );
+  }
+
+  const match = matches[0] as { gateIndex: number; noteIdIndex: number };
+  return {
+    calldata: calldata.slice(match.gateIndex + 2, match.gateIndex + 2 + shape.calldataLength),
+    gateIndex: match.gateIndex,
+    noteIdIndex: match.noteIdIndex,
+  };
+}
+
+/**
+ * Read the resolved open note id out of a prepared call.
+ *
+ * The note id is the last felt of the **invoke** calldata — `privacy_invoke(operation, token,
+ * pool_address, note_id)` — which {@link findGateInvokeCalldata} locates inside the pool's
+ * transaction. It is emphatically not the last felt of the prepared call: in the mainnet
+ * transaction this is tested against, the invoke's note id sits at index 104 of 111 and the array
+ * ends with an unrelated `0x1`.
+ *
+ * Throws {@link NotePreparationError} if the wallet did not resolve the placeholder, which is a
+ * condition to report, not to work around.
+ */
+export function readResolvedNoteId(prepared: PreparedInvoke, shape: GateInvokeShape): Felt {
+  const { calldata } = findGateInvokeCalldata(prepared, shape);
+  const noteId = calldata[calldata.length - 1] as string;
+
+  if (isPlaceholder(noteId)) {
+    throw new NotePreparationError(
+      `strk20PrepareInvoke returned the unsubstituted placeholder ${noteId}. This wallet does not ` +
         "resolve calldata at prepare time, so the note id is not knowable before signing.",
       prepared,
     );
   }
-  if (!isFelt(last)) {
+  if (!isFelt(noteId)) {
     throw new NotePreparationError(
-      `the last calldata element ${JSON.stringify(last)} is not a field element`,
+      `the note id ${JSON.stringify(noteId)} is not a field element`,
       prepared,
     );
   }
-  if (feltEquals(last, NOTE_ANY)) {
+  if (feltEquals(noteId, NOTE_ANY)) {
     throw new NotePreparationError(
       "the resolved note id equals the NOTE_ANY sentinel, which the gate refuses with " +
         "CORDON_NOTE_IS_SENTINEL",
       prepared,
     );
   }
-  if (feltEquals(last, 0)) {
+  if (feltEquals(noteId, 0)) {
     throw new NotePreparationError(
-      "the resolved note id is zero, which is the Fund leg's binding and never a real note",
+      "the resolved note id is zero, which is the Fund leg's binding and never a real note. A " +
+        "wallet that leaves the open-note placeholder as zero has not reserved a note for this " +
+        "transaction.",
       prepared,
     );
   }
-  return toFelt(last);
+  return toFelt(noteId);
 }
 
 /** A signed leg, its action array, and the resolved call ready to submit. */
@@ -215,8 +314,12 @@ async function bindAndPrepare<TAuthorization extends GateAuthorization>(
   // and the note index, never on the invoke calldata. It is bound to a placeholder note so that
   // nothing valid is ever produced by the first pass.
   const probeBinding = bindToNote(PROBE_NOTE_ID, { validUntil: 1 });
-  const probe = build(signFor(probeBinding));
-  const noteId = readResolvedNoteId(await options.prepare(probe));
+  const probeAuthorization = signFor(probeBinding);
+  const probe = build(probeAuthorization);
+  // The probe and the real transaction encode to the same length and the same gate, token and
+  // pool, so one shape locates the invoke in both prepares.
+  const shape = gateInvokeShape(probeAuthorization);
+  const noteId = readResolvedNoteId(await options.prepare(probe), shape);
 
   const binding = bindToNote(
     noteId,
@@ -226,7 +329,7 @@ async function bindAndPrepare<TAuthorization extends GateAuthorization>(
   const actions = build(authorization);
   const prepared = await options.prepare(actions);
 
-  const preparedNoteId = readResolvedNoteId(prepared);
+  const preparedNoteId = readResolvedNoteId(prepared, gateInvokeShape(authorization));
   if (!feltEquals(preparedNoteId, noteId)) {
     throw new NoteDriftError(noteId, preparedNoteId);
   }
@@ -399,6 +502,19 @@ export async function prepareFund(
 
   const actions = buildFundActions({ authorization });
   const prepared = await params.prepare(actions);
+
+  // A Fund needs no second prepare, but it still checks that the invoke in the prepared call is
+  // the one this SDK built and that its note id really is zero. Without that, a Fund would be the
+  // one leg where a mangled prepared call went unnoticed — its binding is zero either way.
+  const { calldata } = findGateInvokeCalldata(prepared, gateInvokeShape(authorization));
+  const noteId = calldata[calldata.length - 1] as string;
+  if (!isFelt(noteId) || !feltEquals(noteId, 0)) {
+    throw new NotePreparationError(
+      `a Fund fills no open note, so its note id must be zero, but the prepared call carries ` +
+        `${JSON.stringify(noteId)}. The gate refuses anything else with CORDON_NOTE_ID_NOT_ZERO.`,
+      prepared,
+    );
+  }
 
   return {
     authorization,

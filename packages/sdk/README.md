@@ -241,7 +241,9 @@ is always zero.
 ### The prepare-twice flow
 
 `strk20PrepareInvoke` returns a **fully resolved** Starknet `Call`, so the substituted note id is
-sitting in `call.calldata`. The flow is:
+sitting in `call.calldata`. Be clear about what that call is: it is the pool's own `apply_actions`
+transaction, with our `privacy_invoke` nested inside it among the withdraw and transfer actions. The
+note id is in the middle of that array, never at the end. The flow is:
 
 1. prepare once with a throwaway authorisation, to learn the note id;
 2. sign the real authorisation bound to that id;
@@ -263,9 +265,17 @@ sign for the new note.
 The throwaway first pass never escapes: it is bound to a placeholder note and dated to the unix
 epoch, so even if it leaked it is dead on arrival.
 
-`readResolvedNoteId(prepared)` is the same extraction on its own, for callers driving the wallet
-themselves. The note id is the last felt of the gate's calldata — `privacy_invoke(operation, token,
-pool_address, note_id)` — so the position is known rather than guessed.
+`readResolvedNoteId(prepared, shape)` is the same extraction on its own, for callers driving the
+wallet themselves; `gateInvokeShape(authorization)` builds the `shape` argument. It locates the
+invoke by matching the gate address, the exact calldata length this SDK encoded, and the token and
+pool in the two positions before the note id — then takes the last felt of that segment, which is
+where `privacy_invoke(operation, token, pool_address, note_id)` puts it.
+
+Matching the whole shape is not defensive padding. The gate address alone appears three times in a
+real transaction, twice as a withdraw recipient, and a position counted from either end lands on an
+unrelated felt. If the shape does not match, the reader throws rather than returning a guess: a
+guessed note id becomes a binding the gate refuses with `CORDON_NOTE_MISMATCH`, which is a confusing
+way to learn that the calldata was misread.
 
 ### If the wallet cannot resolve calldata
 
@@ -434,7 +444,7 @@ the payee are not.
 | Field elements | `toFelt` `toBigInt` `toAddress` `shortStringToFelt` `feltToShortString` `feltEquals` `isFelt` `padFelt` `toU64Felt` `toU128Felt` `randomFelt` |
 | Hashing | `credentialHash` `settlementTermsHash` `quotedSettlementHash` `subjectActionHash` `*Preimage` `poseidon` `DOMAIN_TAGS` `LEG_TAGS` `DIRECT_TERMS_HASH` `NOTE_ANY` `MAX_UNBOUND_WINDOW_SECONDS` `CREDENTIAL_TAG` `SUBJECT_ACTION_TAG` `SETTLEMENT_TERMS_TAG` |
 | Note bindings | `bindToNote` `acceptAnyNoteAndAllowRedirection` `fundBinding` `bindingFelt` `isUnbound` `describeBinding` |
-| Prepare | `prepareDirect` `prepareFund` `prepareClaim` `prepareRefund` `readResolvedNoteId` `NotePreparationError` `NoteDriftError` |
+| Prepare | `prepareDirect` `prepareFund` `prepareClaim` `prepareRefund` `readResolvedNoteId` `findGateInvokeCalldata` `gateInvokeShape` `NotePreparationError` `NoteDriftError` |
 | Context | `fetchGateContext` `assertGateContext` `createGateContext` `GateContextError` |
 | Keys | `generateSubjectKeypair` `deriveSubjectKeypair` `subjectKeyTypedData` `subjectKeyMessageHash` `subjectPublicKey` `signHash` `verifyHash` `signCredential` `verifyCredentialSignature` `signSubjectAction` `verifySubjectAction` `randomNonce` |
 | Credentials | `issueCredential` `createCredential` `validateCredential` `summarizeCredential` `credentialToJson` `credentialFromJson` `credentialCalldata` `credentialFromCalldata` `encodeCredential` `decodeCredential` `credentialUri` |
